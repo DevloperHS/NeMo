@@ -108,10 +108,10 @@ class Wav2VecModel(ModelPT):
         if trainer is not None:
             self.global_rank = (trainer.node_rank * trainer.num_gpus) + trainer.local_rank
             self.world_size = trainer.num_nodes * trainer.num_gpus
-
+        model_cfg = Wav2VecModelConfig(**cfg.params)
         super().__init__(cfg=cfg, trainer=trainer)
-        cfg = Wav2VecModelConfig(**cfg.wav2vec)
 
+        cfg = model_cfg
         feature_enc_layers = cfg.conv_features.conv_feature_layers
         self.embed = feature_enc_layers[-1][0]
 

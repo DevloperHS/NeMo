@@ -77,7 +77,8 @@ Overide optimizer entirely
 def main(cfg: DictConfig):
     trainer = pl.Trainer(**cfg.trainer)
     exp_manager(trainer, cfg.get("exp_manager", None))
-    wav2vec_model = Wav2VecModel(cfg=cfg.params, trainer=trainer)
+
+    wav2vec_model = Wav2VecModel(cfg=cfg.model, trainer=trainer)
     trainer.fit(wav2vec_model)
 
 
