@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 from torch.nn import Parameter
 
-from nemo.collections.asr.models.modules.quant_noise import quant_noise
+from nemo.collections.asr.models.wav2vec.modules.quant_noise import quant_noise
 
 
 class MultiheadAttention(nn.Module):
@@ -148,7 +148,7 @@ class MultiheadAttention(nn.Module):
                 self.dropout_module.p,
                 self.out_proj.weight,
                 self.out_proj.bias,
-                self.training or self.dropout_module.apply_during_inference,
+                self.training,
                 key_padding_mask,
                 need_weights,
                 attn_mask,

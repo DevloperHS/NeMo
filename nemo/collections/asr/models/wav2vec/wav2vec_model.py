@@ -1,128 +1,24 @@
 import math
-from enum import Enum
-from typing import Union, Dict, Optional, Tuple, List
+from typing import Optional, Tuple, List
 
+import numpy as np
 import torch
 import torch.nn.functional as F
-from dataclasses import dataclass, field
-
 from omegaconf import DictConfig
+
+from nemo.collections.asr.models.wav2vec.modules.gumbel_vector_quantizer import GumbelVectorQuantizer
+from nemo.collections.asr.models.wav2vec.modules.multihead_attention import MultiheadAttention
+from nemo.collections.asr.models.wav2vec.modules.norm import Fp32LayerNorm, Fp32GroupNorm
+from nemo.collections.asr.models.wav2vec.modules.utils import compute_mask_indices
 from pytorch_lightning import Trainer
 from torch import nn
-import numpy as np
 
-from nemo.collections.asr.models.modules.gumbel_vector_quantizer import GumbelVectorQuantizer
-from nemo.collections.asr.models.modules.multihead_attention import MultiheadAttention
-from nemo.collections.asr.models.modules.norm import Fp32LayerNorm, Fp32GroupNorm
-from nemo.collections.asr.models.modules.utils import compute_mask_indices
+from nemo.collections.asr.data.audio_to_data import FileAudioDataset
+from nemo.collections.asr.losses.wav2vecloss import Wav2vecCriterion
+from nemo.collections.asr.models.wav2vec.modules.config import DataConfig, Wav2VecModelConfig, \
+    TransformerSentenceEncoderConfig, TransformerEncoderConfig
 from nemo.core import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo
-
-
-@dataclass
-class ConvConfig:
-    conv_pos: int = 128
-    conv_pos_groups: int = 16
-
-
-class Wav2VecActivationType(Enum):
-    relu = nn.ReLU
-    gelu = nn.GELU
-    tanh = nn.Tanh
-
-
-@dataclass
-class TransformerSentenceEncoderConfig:
-    encoder_layers: int = 12
-    encoder_layerdrop: float = 0.0
-    embedding_dim: int = 768
-    ffn_embedding_dim: float = 3072
-    num_attention_heads: float = 8
-    dropout: float = 0.1
-    attention_dropout: float = 0.1
-    activation_dropout: float = 0.1
-    activation_fn: Wav2VecActivationType = Wav2VecActivationType.relu
-    layer_norm_first: bool = False
-
-
-@dataclass
-class TransformerEncoderConfig:
-    dropout: float = 0.1
-    conv: ConvConfig = ConvConfig()
-    encoder: TransformerSentenceEncoderConfig = TransformerSentenceEncoderConfig()
-
-
-@dataclass
-class QuantizeConfig(DictConfig):
-    quantize_targets: bool = False
-    quantize_input: bool = False
-    sample_quantizer: bool = False
-    latent_vars: int = 320
-    latent_groups: int = 2
-    latent_dim = 0
-    latent_temp: tuple = (2, 0.5, 0.999995)
-
-
-@dataclass
-class ConvFeaturesConfig(DictConfig):
-    extractor_mode: str = 'default'
-    conv_bias: bool = False
-    conv_feature_layers: List[tuple] = field(
-        default_factory=
-        [
-            [
-                (512, 10, 5),
-                (512, 8, 4)
-            ] +
-            [
-                (512, 4, 2)
-            ] * 3 +
-            [
-                (512, 1, 1)
-            ]
-        ]
-    )  # Default conv layers as defined in the fairseq repo
-
-
-@dataclass
-class Wav2VecModelConfig(DictConfig):
-    transformer_encoder: TransformerEncoderConfig = TransformerSentenceEncoderConfig()
-
-    mask_prob: float = 0.65
-    mask_selection: str = 'static'
-    mask_other: int = 0
-    mask_length: int = 10
-    no_mask_overlap: bool = False
-    mask_min_space: int = 1
-
-    mask_channel_prob = float = 0
-    mask_channel_selection: str = 'static'
-    mask_channel_other: int = 0
-    mask_channel_length: int = 10
-    no_mask_channel_overlap: bool = False
-    mask_channel_min_space: int = 1
-
-    dropout_input: float = 0
-    dropout_features: float = 0
-
-    final_dim: int = 0
-
-    n_negatives: int = 100
-    cross_sample_negatives: int = 0
-    codebook_negatives: int = 0
-    negatives_from_everywhere: bool = False
-
-    logit_temp: float = 0.1
-
-    target_glu: bool = False
-
-    # quantize
-    quantize = QuantizeConfig()
-
-    feature_grad_mult: float = 1.0
-
-    # conv_features
-    conv_features = ConvFeaturesConfig()
 
 
 def buffered_arange(max):
@@ -148,23 +44,64 @@ class GradMultiply(torch.autograd.Function):
 
 class Wav2VecModel(ModelPT):
 
-    def setup_training_data(self, train_data_config: Union[DictConfig, Dict]):
-        pass
+    def setup_dataloader(self, cfg: DictConfig):
+        cfg = DataConfig(**cfg)
+        dataset = FileAudioDataset(cfg=cfg)
+        dataloader = torch.utils.data.DataLoader(
+            dataset=dataset,
+            batch_size=cfg.batch_size,
+            collate_fn=dataset.collater,
+            drop_last=cfg.drop_last,
+            shuffle=cfg.shuffle,
+            num_workers=cfg.num_workers,
+            pin_memory=cfg.pin_memory
+        )
+        return dataloader
 
-    def setup_validation_data(self, val_data_config: Union[DictConfig, Dict]):
-        pass
+    def setup_training_data(self, train_data_config: DictConfig):
+        self._train_dl = self.setup_dataloader(train_data_config)
 
-    def setup_test_data(self, test_data_config: Union[DictConfig, Dict]):
-        pass
+    def setup_validation_data(self, val_data_config: DictConfig):
+        self._validation_dl = self.setup_dataloader(val_data_config)
+
+    def setup_test_data(self, test_data_config: DictConfig):
+        self._test_dl = self.setup_dataloader(test_data_config)
 
     def training_step(self, batch, batch_ix):
-        pass
+        loss, sample_size, logging_output = self.loss(
+            model=self,
+            sample=batch
+        )
+        return loss
+
+    def validation_step(self, batch, batch_idx, dataloader_idx=0):
+        loss, sample_size, logging_output = self.loss(
+            model=self,
+            sample=batch
+        )
+        return {'val_loss': loss}
+
+    def validation_epoch_end(self, outputs):
+        val_loss_mean = torch.stack([x['val_loss'] for x in outputs]).mean()
+        return {'val_loss': val_loss_mean}
+
+    def test_step(self, batch, batch_idx, dataloader_idx=0):
+        logs = self.validation_step(
+            batch=batch,
+            batch_idx=batch_idx,
+            dataloader_idx=dataloader_idx
+        )
+        return {'test_loss': logs['val_loss']}
+
+    def test_epoch_end(self, outputs):
+        test_loss_mean = torch.stack([x['test_loss'] for x in outputs]).mean()
+        return {'test_loss': test_loss_mean}
 
     @classmethod
     def list_available_models(cls) -> Optional[PretrainedModelInfo]:
-        pass
+        return None
 
-    def __init__(self, cfg: Wav2VecModelConfig, trainer: Trainer = None):
+    def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         # Get global rank and total number of GPU workers for IterableDataset partitioning, if applicable
         self.global_rank = 0
         self.world_size = 0
@@ -173,7 +110,9 @@ class Wav2VecModel(ModelPT):
             self.world_size = trainer.num_nodes * trainer.num_gpus
 
         super().__init__(cfg=cfg, trainer=trainer)
-        feature_enc_layers = cfg.conv_feature.conv_feature_layers
+        cfg = Wav2VecModelConfig(**cfg.wav2vec)
+
+        feature_enc_layers = cfg.conv_features.conv_feature_layers
         self.embed = feature_enc_layers[-1][0]
 
         self.feature_extractor = ConvFeatureExtractionModel(
@@ -212,7 +151,7 @@ class Wav2VecModel(ModelPT):
         self.quantizer = None
         self.input_quantizer = None
 
-        self.n_negatives = cfg.num_negatives
+        self.n_negatives = cfg.n_negatives
         self.cross_sample_negatives = cfg.cross_sample_negatives
         self.codebook_negatives = cfg.codebook_negatives
         self.negatives_from_everywhere = cfg.negatives_from_everywhere
@@ -259,7 +198,7 @@ class Wav2VecModel(ModelPT):
             torch.FloatTensor(encoder_embed_dim).uniform_()
         )
 
-        self.encoder = TransformerEncoder(cfg.encoder)
+        self.encoder = TransformerEncoder(cfg.transformer_encoder)
         self.layer_norm = nn.LayerNorm(self.embed)
 
         self.target_glu = None
@@ -269,6 +208,7 @@ class Wav2VecModel(ModelPT):
             )
 
         self.final_proj = nn.Linear(encoder_embed_dim, final_dim)
+        self.loss = Wav2vecCriterion()
 
     def apply_mask(self, x, padding_mask):
         B, T, C = x.shape
@@ -458,7 +398,6 @@ class Wav2VecModel(ModelPT):
                 neg_cands, *_ = self.quantizer(unmasked_features, produce_targets=False)
                 negs, _ = self.sample_negatives(neg_cands, y.size(1))
                 negs = self.project_q(negs)
-
             else:
                 negs, _ = self.sample_negatives(y, y.size(1))
 
@@ -730,7 +669,7 @@ class TransformerSentenceEncoderLayer(nn.Module):
         self.activation_dropout = cfg.activation_dropout
 
         # Initialize blocks
-        self.activation_fn = cfg.activation_fn.value
+        self.activation_fn = cfg.activation_fn.value()
         self.self_attn = MultiheadAttention(
             self.embedding_dim,
             cfg.num_attention_heads,

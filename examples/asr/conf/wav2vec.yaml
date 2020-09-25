@@ -1,0 +1,51 @@
+name: &name "Wav2vec"
+
+model:
+  params:
+    mask_prob: 0.65
+  train_ds:
+    manifest_path: ???
+    sample_rate: 16000
+    batch_size: 32
+    shuffle: True
+    num_workers: 4
+  validation_ds:
+    manifest_path: ???
+    sample_rate: 16000
+    batch_size: 32
+    shuffle: False
+    num_workers: 4
+  test_ds:
+    manifest_path: null
+    sample_rate: 16000
+    batch_size: 32
+    shuffle: False
+    num_workers: 4
+  optim:
+    name: adam
+    lr: 0.0005
+    eps: 1e-06
+    # optimizer arguments
+    betas: [0.9, 0.98]
+    weight_decay: 0.001
+
+    # scheduler setup
+    sched:
+      name: PolynomialDecayAnnealing
+      min_lr: 0.000
+      # Scheduler params
+      warmup_steps: null
+      warmup_ratio: 0.1
+trainer:
+  gpus: 0 # number of gpus
+  max_epochs: 200
+  max_steps: null # computed at runtime if not set
+#  num_nodes: 1
+#  distributed_backend: ddp
+  accumulate_grad_batches: 1
+hydra:
+  run:
+    dir: .
+  job_logging:
+    root:
+      handlers: null
