@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from omegaconf import DictConfig
-
+import pytorch_lightning as pl
 from nemo.collections.asr.models.wav2vec.modules.gumbel_vector_quantizer import GumbelVectorQuantizer
 from nemo.collections.asr.models.wav2vec.modules.multihead_attention import MultiheadAttention
 from nemo.collections.asr.models.wav2vec.modules.norm import Fp32LayerNorm, Fp32GroupNorm
@@ -15,7 +15,7 @@ from torch import nn
 
 from nemo.collections.asr.data.audio_to_data import FileAudioDataset
 from nemo.collections.asr.losses.wav2vecloss import Wav2vecCriterion
-from nemo.collections.asr.models.wav2vec.modules.config import DataConfig, Wav2VecModelConfig, \
+from nemo.collections.asr.models.wav2vec.modules.config import DataConfig, Wav2VecEncoderModelConfig, \
     TransformerSentenceEncoderConfig, TransformerEncoderConfig
 from nemo.core import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo
@@ -42,7 +42,7 @@ class GradMultiply(torch.autograd.Function):
         return grad * ctx.scale, None
 
 
-class Wav2VecModel(ModelPT):
+class Wav2VecEncoderModel(ModelPT):
 
     def setup_dataloader(self, cfg: DictConfig):
         cfg = DataConfig(**cfg)
@@ -81,21 +81,22 @@ class Wav2VecModel(ModelPT):
         )
         return {'val_loss': loss}
 
-    def validation_epoch_end(self, outputs):
-        val_loss_mean = torch.stack([x['val_loss'] for x in outputs]).mean()
-        return {'val_loss': val_loss_mean}
-
     def test_step(self, batch, batch_idx, dataloader_idx=0):
-        logs = self.validation_step(
-            batch=batch,
-            batch_idx=batch_idx,
-            dataloader_idx=dataloader_idx
+        loss, sample_size, logging_output = self.loss(
+            model=self,
+            sample=batch
         )
-        return {'test_loss': logs['val_loss']}
+        return {'test_loss': loss}
 
-    def test_epoch_end(self, outputs):
-        test_loss_mean = torch.stack([x['test_loss'] for x in outputs]).mean()
-        return {'test_loss': test_loss_mean}
+    def multi_validation_epoch_end(self, outputs, dataloader_idx: int = 0):
+        val_loss_mean = torch.stack([x['val_loss'] for x in outputs]).mean()
+        logs = {'validation_loss': val_loss_mean}
+        return {'val_loss': val_loss_mean, 'log': logs}
+
+    def multi_test_epoch_end(self, outputs, dataloader_idx: int = 0):
+        val_loss_mean = torch.stack([x['test_loss'] for x in outputs]).mean()
+        logs = {'test_loss': val_loss_mean}
+        return {'test_loss': val_loss_mean, 'log': logs}
 
     @classmethod
     def list_available_models(cls) -> Optional[PretrainedModelInfo]:
@@ -108,10 +109,9 @@ class Wav2VecModel(ModelPT):
         if trainer is not None:
             self.global_rank = (trainer.node_rank * trainer.num_gpus) + trainer.local_rank
             self.world_size = trainer.num_nodes * trainer.num_gpus
-        model_cfg = Wav2VecModelConfig(**cfg.params)
         super().__init__(cfg=cfg, trainer=trainer)
+        cfg = Wav2VecEncoderModelConfig(**cfg.params)
 
-        cfg = model_cfg
         feature_enc_layers = cfg.conv_features.conv_feature_layers
         self.embed = feature_enc_layers[-1][0]
 
@@ -225,7 +225,8 @@ class Wav2VecModel(ModelPT):
                 min_space=self.mask_min_space,
             )
             mask_indices = torch.from_numpy(mask_indices).to(x.device)
-            x[mask_indices] = self.mask_emb
+            mask_emb = self.mask_emb.type_as(x)
+            x[mask_indices] = mask_emb
         else:
             mask_indices = None
 

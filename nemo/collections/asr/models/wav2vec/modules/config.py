@@ -88,7 +88,7 @@ class DataConfig:
 
 
 @dataclass
-class Wav2VecModelConfig:
+class Wav2VecEncoderModelConfig:
     transformer_encoder: TransformerEncoderConfig = TransformerEncoderConfig()
 
     mask_prob: float = 0.65
