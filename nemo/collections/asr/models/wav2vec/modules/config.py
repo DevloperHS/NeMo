@@ -75,12 +75,11 @@ class ConvFeaturesConfig:
 class DataConfig:
     manifest_path: str = ''
     sample_rate: int = 16000
-    max_sample_size: Optional[int] = field(default_factory=lambda: None)
-    min_sample_size: Optional[int] = field(default_factory=lambda: None)
-    min_length: Optional[int] = field(default_factory=lambda: None)
-    pad: bool = False
-    normalize: bool = False
+    min_duration: Optional[int] = field(default_factory=lambda: None)
+    max_duration: Optional[int] = field(default_factory=lambda: None)
     batch_size: int = 32
+    int_values: bool = False
+    trim: bool = False
     drop_last: bool = False
     shuffle: bool = False
     num_workers: int = 0

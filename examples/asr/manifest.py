@@ -9,9 +9,11 @@ Data pre-processing: build vocabularies and binarize training data.
 
 import argparse
 import glob
+import json
 import os
+
 import soundfile
-import random
+from sklearn.model_selection import train_test_split
 
 
 def get_parser():
@@ -32,22 +34,26 @@ def main(args):
 
     dir_path = os.path.realpath(args.root)
     search_path = os.path.join(dir_path, '**/*.' + args.ext)
-    rand = random.Random(args.seed)
 
-    with open(os.path.join(args.dest, 'train.tsv'), 'w') as train_f, open(
-            os.path.join(args.dest, 'valid.tsv'), 'w') as valid_f:
-        print(dir_path, file=train_f)
-        print(dir_path, file=valid_f)
+    files = [
+        {
+            'audio_filepath': os.path.realpath(path),
+            'duration': soundfile.info(path).duration,
+            'text': ''
+        } for path in glob.iglob(search_path, recursive=True)
+    ]
 
-        for fname in glob.iglob(search_path, recursive=True):
-            file_path = os.path.realpath(fname)
+    train_files, val_files = train_test_split(
+        files,
+        test_size=args.valid_percent,
+        random_state=args.seed
+    )
 
-            if args.path_must_contain and args.path_must_contain not in file_path:
-                continue
+    with open(os.path.join(args.dest, 'train.json'), 'w') as train_f:
+        train_f.write('\n'.join(json.dumps(x) for x in train_files))
 
-            frames = soundfile.info(fname).frames
-            dest = train_f if rand.random() > args.valid_percent else valid_f
-            print('{}\t{}'.format(os.path.relpath(file_path, dir_path), frames), file=dest)
+    with open(os.path.join(args.dest, 'valid.json'), 'w') as valid_f:
+        valid_f.write('\n'.join(json.dumps(x) for x in val_files))
 
 
 if __name__ == '__main__':

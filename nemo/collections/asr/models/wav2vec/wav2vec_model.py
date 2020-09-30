@@ -1,22 +1,25 @@
+import logging
 import math
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Dict
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 from omegaconf import DictConfig
-import pytorch_lightning as pl
+from pytorch_lightning import Trainer
+from torch import nn
+
+from nemo.collections.asr.data.audio_to_label import AudioToSpeechLabelDataSet
+from nemo.collections.asr.data.audio_to_text import _speech_collate_fn, TarredAudioToCharDataset, AudioToCharDataset
+from nemo.collections.asr.losses.wav2vecloss import Wav2vecCriterion
+from nemo.collections.asr.models.wav2vec.modules.config import DataConfig, Wav2VecEncoderModelConfig, \
+    TransformerSentenceEncoderConfig, TransformerEncoderConfig
 from nemo.collections.asr.models.wav2vec.modules.gumbel_vector_quantizer import GumbelVectorQuantizer
 from nemo.collections.asr.models.wav2vec.modules.multihead_attention import MultiheadAttention
 from nemo.collections.asr.models.wav2vec.modules.norm import Fp32LayerNorm, Fp32GroupNorm
 from nemo.collections.asr.models.wav2vec.modules.utils import compute_mask_indices
-from pytorch_lightning import Trainer
-from torch import nn
-
-from nemo.collections.asr.data.audio_to_data import FileAudioDataset
-from nemo.collections.asr.losses.wav2vecloss import Wav2vecCriterion
-from nemo.collections.asr.models.wav2vec.modules.config import DataConfig, Wav2VecEncoderModelConfig, \
-    TransformerSentenceEncoderConfig, TransformerEncoderConfig
+from nemo.collections.asr.parts.features import WaveformFeaturizer
+from nemo.collections.asr.parts.perturb import process_augmentations
 from nemo.core import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo
 
@@ -43,64 +46,6 @@ class GradMultiply(torch.autograd.Function):
 
 
 class Wav2VecEncoderModel(ModelPT):
-
-    def setup_dataloader(self, cfg: DictConfig):
-        cfg = DataConfig(**cfg)
-        dataset = FileAudioDataset(cfg=cfg)
-        dataloader = torch.utils.data.DataLoader(
-            dataset=dataset,
-            batch_size=cfg.batch_size,
-            collate_fn=dataset.collater,
-            drop_last=cfg.drop_last,
-            shuffle=cfg.shuffle,
-            num_workers=cfg.num_workers,
-            pin_memory=cfg.pin_memory
-        )
-        return dataloader
-
-    def setup_training_data(self, train_data_config: DictConfig):
-        self._train_dl = self.setup_dataloader(train_data_config)
-
-    def setup_validation_data(self, val_data_config: DictConfig):
-        self._validation_dl = self.setup_dataloader(val_data_config)
-
-    def setup_test_data(self, test_data_config: DictConfig):
-        self._test_dl = self.setup_dataloader(test_data_config)
-
-    def training_step(self, batch, batch_ix):
-        loss, sample_size, logging_output = self.loss(
-            model=self,
-            sample=batch
-        )
-        return loss
-
-    def validation_step(self, batch, batch_idx, dataloader_idx=0):
-        loss, sample_size, logging_output = self.loss(
-            model=self,
-            sample=batch
-        )
-        return {'val_loss': loss}
-
-    def test_step(self, batch, batch_idx, dataloader_idx=0):
-        loss, sample_size, logging_output = self.loss(
-            model=self,
-            sample=batch
-        )
-        return {'test_loss': loss}
-
-    def multi_validation_epoch_end(self, outputs, dataloader_idx: int = 0):
-        val_loss_mean = torch.stack([x['val_loss'] for x in outputs]).mean()
-        logs = {'validation_loss': val_loss_mean}
-        return {'val_loss': val_loss_mean, 'log': logs}
-
-    def multi_test_epoch_end(self, outputs, dataloader_idx: int = 0):
-        val_loss_mean = torch.stack([x['test_loss'] for x in outputs]).mean()
-        logs = {'test_loss': val_loss_mean}
-        return {'test_loss': val_loss_mean, 'log': logs}
-
-    @classmethod
-    def list_available_models(cls) -> Optional[PretrainedModelInfo]:
-        return None
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         # Get global rank and total number of GPU workers for IterableDataset partitioning, if applicable
@@ -209,6 +154,116 @@ class Wav2VecEncoderModel(ModelPT):
 
         self.final_proj = nn.Linear(encoder_embed_dim, final_dim)
         self.loss = Wav2vecCriterion()
+
+    def setup_dataloader(self, config: DictConfig):
+        if 'augmentor' in config:
+            augmentor = process_augmentations(config['augmentor'])
+        else:
+            augmentor = None
+
+        shuffle = config['shuffle']
+
+        # Instantiate tarred dataset loader or normal dataset loader
+        if config.get('is_tarred', False):
+            if ('tarred_audio_filepaths' in config and config['tarred_audio_filepaths'] is None) or (
+                    'manifest_filepath' in config and config['manifest_filepath'] is None
+            ):
+                logging.warning(
+                    "Could not load dataset as `manifest_filepath` was None or "
+                    f"`tarred_audio_filepaths` is None. Provided config : {config}"
+                )
+                return None
+
+            shuffle_n = config.get('shuffle_n', 4 * config['batch_size'])
+            dataset = TarredAudioToCharDataset(
+                audio_tar_filepaths=config['tarred_audio_filepaths'],
+                manifest_filepath=config['manifest_filepath'],
+                labels=[],
+                sample_rate=config['sample_rate'],
+                int_values=config.get('int_values', False),
+                augmentor=augmentor,
+                shuffle_n=shuffle_n,
+                max_duration=config.get('max_duration', None),
+                min_duration=config.get('min_duration', None),
+                max_utts=config.get('max_utts', 0),
+                trim=config.get('trim_silence', False),
+                global_rank=self.global_rank,
+                world_size=self.world_size,
+            )
+            shuffle = False
+        else:
+            if 'manifest_filepath' in config and config['manifest_filepath'] is None:
+                logging.warning(f"Could not load dataset as `manifest_filepath` was None. Provided config : {config}")
+                return None
+
+            dataset = AudioToCharDataset(
+                manifest_filepath=config['manifest_filepath'],
+                labels=[],
+                sample_rate=config['sample_rate'],
+                int_values=config.get('int_values', False),
+                augmentor=augmentor,
+                max_duration=config.get('max_duration', None),
+                min_duration=config.get('min_duration', None),
+                max_utts=config.get('max_utts', 0),
+                blank_index=config.get('blank_index', -1)
+            )
+
+        return torch.utils.data.DataLoader(
+            dataset=dataset,
+            batch_size=config['batch_size'],
+            collate_fn=dataset.collate_fn,
+            drop_last=config.get('drop_last', False),
+            shuffle=shuffle,
+            num_workers=config.get('num_workers', 0),
+        )
+
+    def setup_training_data(self, train_data_config: DictConfig):
+        self._train_dl = self.setup_dataloader(train_data_config)
+
+    def setup_validation_data(self, val_data_config: DictConfig):
+        self._validation_dl = self.setup_dataloader(val_data_config)
+
+    def setup_test_data(self, test_data_config: DictConfig):
+        self._test_dl = self.setup_dataloader(test_data_config)
+
+    def training_step(self, batch, batch_ix):
+        loss, sample_size, logging_output = self.loss(
+            model=self,
+            sample=batch
+        )
+        logs = {
+            'train_loss': loss,
+            'learning_rate': self._optimizer.param_groups[0]['lr'],
+        }
+        return {'loss': loss, 'log': logs}
+
+    def validation_step(self, batch, batch_idx, dataloader_idx=0):
+        loss, sample_size, logging_output = self.loss(
+            model=self,
+            sample=batch
+        )
+        return {'val_loss': loss}
+
+    def test_step(self, batch, batch_idx, dataloader_idx=0):
+        loss, sample_size, logging_output = self.loss(
+            model=self,
+            sample=batch
+        )
+        return {'test_loss': loss}
+
+    def multi_validation_epoch_end(self, outputs, dataloader_idx: int = 0):
+        val_loss_mean = torch.stack([x['val_loss'] for x in outputs]).mean()
+        logs = {'validation_loss': val_loss_mean}
+        return {'val_loss': val_loss_mean, 'log': logs}
+
+    def multi_test_epoch_end(self, outputs, dataloader_idx: int = 0):
+        val_loss_mean = torch.stack([x['test_loss'] for x in outputs]).mean()
+        logs = {'test_loss': val_loss_mean}
+        return {'test_loss': val_loss_mean, 'log': logs}
+
+    @classmethod
+    def list_available_models(cls) -> Optional[PretrainedModelInfo]:
+        return None
 
     def apply_mask(self, x, padding_mask):
         B, T, C = x.shape
