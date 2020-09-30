@@ -12,7 +12,7 @@ from torch import nn
 from nemo.collections.asr.data.audio_to_text import TarredAudioToCharDataset, AudioToCharDataset
 from nemo.collections.asr.losses.wav2vecloss import Wav2vecCriterion
 from nemo.collections.asr.models.wav2vec.modules.config import TransformerSentenceEncoderConfig, \
-    TransformerEncoderConfig, QuantizeConfig, ConvFeaturesConfig, Wav2VecEncoderModelConfig
+    TransformerEncoderConfig, QuantizeConfig, ConvFeaturesConfig, Wav2VecEncoderModelConfig, ConvConfig
 from nemo.collections.asr.models.wav2vec.modules.gumbel_vector_quantizer import GumbelVectorQuantizer
 from nemo.collections.asr.models.wav2vec.modules.multihead_attention import MultiheadAttention
 from nemo.collections.asr.models.wav2vec.modules.norm import Fp32LayerNorm, Fp32GroupNorm
@@ -54,10 +54,17 @@ class Wav2VecEncoderModel(ModelPT):
             self.world_size = trainer.num_nodes * trainer.num_gpus
         super().__init__(cfg=cfg, trainer=trainer)
 
-        transformer_encoder_cfg = TransformerEncoderConfig(**cfg.get('transformer_encoder', {}))
-        quantize_cfg = QuantizeConfig(**cfg.get('quantize', {}))
-        conv_cfg = ConvFeaturesConfig(**cfg.get('conv_features', {}))
-        encoder_cfg = Wav2VecEncoderModelConfig(**cfg.get('encoder', {}))
+        params_cfg = cfg.get('params', {})
+        quantize_cfg = QuantizeConfig(**params_cfg.get('quantize', {}))
+        conv_cfg = ConvFeaturesConfig(**params_cfg.get('conv_features', {}))
+        encoder_cfg = Wav2VecEncoderModelConfig(**params_cfg.get('train', {}))
+
+        transformer_cfg = params_cfg.get('transformer_encoder', {})
+        transformer_encoder_cfg = TransformerEncoderConfig(
+            dropout=transformer_cfg.get('dropout', 0.1),
+            conv=ConvConfig(**transformer_cfg.get('conv', {})),
+            encoder=TransformerSentenceEncoderConfig(**transformer_cfg.get('encoder', {}))
+        )
 
         feature_enc_layers = conv_cfg.conv_feature_layers
         self.embed = feature_enc_layers[-1][0]
