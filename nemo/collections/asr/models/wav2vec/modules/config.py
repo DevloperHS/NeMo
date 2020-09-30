@@ -88,8 +88,6 @@ class DataConfig:
 
 @dataclass
 class Wav2VecEncoderModelConfig:
-    transformer_encoder: TransformerEncoderConfig = TransformerEncoderConfig()
-
     mask_prob: float = 0.65
     mask_selection: str = 'static'
     mask_other: int = 0
@@ -118,10 +116,4 @@ class Wav2VecEncoderModelConfig:
 
     target_glu: bool = False
 
-    # quantize
-    quantize: QuantizeConfig = QuantizeConfig()
-
     feature_grad_mult: float = 1.0
-
-    # conv_features
-    conv_features: ConvFeaturesConfig = ConvFeaturesConfig()

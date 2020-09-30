@@ -2,7 +2,8 @@ name: &name "Wav2vec"
 
 model:
   params:
-    mask_prob: 0.65
+    encoder:
+      mask_prob: 0.65
   train_ds:
     manifest_filepath: ???
     sample_rate: 16000
@@ -26,7 +27,7 @@ model:
     lr: 0.0005
     eps: 1e-06
     # optimizer arguments
-    betas: [0.9, 0.98]
+    betas: [ 0.9, 0.98 ]
     weight_decay: 0.001
 
     # scheduler setup
