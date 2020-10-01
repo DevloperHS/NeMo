@@ -24,8 +24,8 @@ class Wav2vecCriterion(torch.nn.Module):
         2) the sample size, which is used as the denominator for the gradient
         3) logging outputs to display while training
         """
-        audio_signal, audio_lengths, _, _ = sample
-        net_output = model(audio_signal)
+        audio_signal, audio_lengths, _, _, padding_mask = sample
+        net_output = model(audio_signal, padding_mask)
         logits = model.get_logits(net_output).float()
         target = model.get_targets(net_output)
 
