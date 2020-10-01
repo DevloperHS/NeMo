@@ -117,8 +117,8 @@ def _padding_collate_fn(batch, pad_id):
         fill_value=True,
         dtype=torch.bool
     )
-    for length in audio_lengths:
-        padding_mask[:length] = False
+    for x, length in enumerate(audio_lengths):
+        padding_mask[x][:length] = False
 
     return audio_signal, audio_lengths, tokens, tokens_lengths, padding_mask
 
