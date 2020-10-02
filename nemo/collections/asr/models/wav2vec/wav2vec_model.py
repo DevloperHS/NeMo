@@ -12,7 +12,7 @@ from torch import nn
 from nemo.collections.asr.data.audio_to_text import TarredAudioToCharDataset, AudioToCharDataset
 from nemo.collections.asr.losses.wav2vecloss import Wav2vecCriterion
 from nemo.collections.asr.models.wav2vec.modules.config import TransformerSentenceEncoderConfig, \
-    TransformerEncoderConfig, QuantizeConfig, ConvFeaturesConfig, Wav2VecEncoderModelConfig, ConvConfig
+    TransformerEncoderConfig, QuantizeConfig, ConvFeaturesConfig, Wav2VecEncoderModelConfig, ConvConfig, LossConfig
 from nemo.collections.asr.models.wav2vec.modules.gumbel_vector_quantizer import GumbelVectorQuantizer
 from nemo.collections.asr.models.wav2vec.modules.multihead_attention import MultiheadAttention
 from nemo.collections.asr.models.wav2vec.modules.norm import Fp32LayerNorm, Fp32GroupNorm
@@ -65,6 +65,8 @@ class Wav2VecEncoderModel(ModelPT):
             conv=ConvConfig(**transformer_cfg.get('conv', {})),
             encoder=TransformerSentenceEncoderConfig(**transformer_cfg.get('encoder', {}))
         )
+
+        loss_cfg = LossConfig(**params_cfg.get('loss', {}))
 
         feature_enc_layers = conv_cfg.conv_feature_layers
         self.embed = feature_enc_layers[-1][0]
@@ -162,7 +164,10 @@ class Wav2VecEncoderModel(ModelPT):
             )
 
         self.final_proj = nn.Linear(encoder_embed_dim, final_dim)
-        self.loss = Wav2vecCriterion()
+        self.loss = Wav2vecCriterion(
+            infonce=loss_cfg.infonce,
+            loss_weights=loss_cfg.loss_weights
+        )
 
     def setup_dataloader(self, config: DictConfig):
         if 'augmentor' in config:

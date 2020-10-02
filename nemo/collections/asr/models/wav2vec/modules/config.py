@@ -87,6 +87,12 @@ class DataConfig:
 
 
 @dataclass
+class LossConfig:
+    infonce: bool = True
+    loss_weights: Optional[tuple] = (0.1, 10)
+
+
+@dataclass
 class Wav2VecEncoderModelConfig:
     mask_prob: float = 0.65
     mask_selection: str = 'static'

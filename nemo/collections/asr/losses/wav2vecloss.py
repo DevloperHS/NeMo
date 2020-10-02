@@ -13,7 +13,7 @@ class Wav2vecCriterion(torch.nn.Module):
     def __init__(self, infonce=True, loss_weights=None, log_keys=None):
         super().__init__()
         self.infonce = infonce
-        self.loss_weights = None if loss_weights is None else eval(loss_weights)
+        self.loss_weights = loss_weights
         self.log_keys = [] if log_keys is None else eval(log_keys)
 
     def forward(self, model, sample, reduce=True, log_pred=False):
