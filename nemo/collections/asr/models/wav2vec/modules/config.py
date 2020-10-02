@@ -1,11 +1,8 @@
-from dataclasses import dataclass, field, MISSING
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional, List, Any
+from typing import Optional, List
 
-from omegaconf import DictConfig
 from torch import nn
-
-from nemo.core.config import PolynomialDecayAnnealingParams
 
 
 @dataclass
@@ -23,7 +20,7 @@ class Wav2VecActivationType(Enum):
 @dataclass
 class TransformerSentenceEncoderConfig:
     encoder_layers: int = 12
-    encoder_layerdrop: float = 0.0
+    encoder_layerdrop: float = 0.05
     embedding_dim: int = 768
     ffn_embedding_dim: int = 3072
     num_attention_heads: int = 8
@@ -43,7 +40,7 @@ class TransformerEncoderConfig:
 
 @dataclass
 class QuantizeConfig:
-    quantize_targets: bool = False
+    quantize_targets: bool = True
     quantize_input: bool = False
     sample_quantizer: bool = False
     latent_vars: int = 320
@@ -108,8 +105,8 @@ class Wav2VecEncoderModelConfig:
     no_mask_channel_overlap: bool = False
     mask_channel_min_space: int = 1
 
-    dropout_input: float = 0
-    dropout_features: float = 0
+    dropout_input: float = 0.1
+    dropout_features: float = 0.1
 
     final_dim: int = 0
 
@@ -122,4 +119,4 @@ class Wav2VecEncoderModelConfig:
 
     target_glu: bool = False
 
-    feature_grad_mult: float = 1.0
+    feature_grad_mult: float = 0.1
