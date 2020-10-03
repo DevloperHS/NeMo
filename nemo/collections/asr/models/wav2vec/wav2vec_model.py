@@ -5,7 +5,7 @@ from typing import Optional, Tuple, List
 import numpy as np
 import torch
 import torch.nn.functional as F
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning import Trainer
 from torch import nn
 
@@ -54,75 +54,71 @@ class Wav2VecEncoderModel(ModelPT):
             self.world_size = trainer.num_nodes * trainer.num_gpus
         super().__init__(cfg=cfg, trainer=trainer)
 
-        params_cfg = cfg.get('params', {})
-        quantize_cfg = QuantizeConfig(**params_cfg.get('quantize', {}))
-        conv_cfg = ConvFeaturesConfig(**params_cfg.get('conv_features', {}))
-        encoder_cfg = Wav2VecEncoderModelConfig(**params_cfg.get('train', {}))
+        # Ensure passed cfg is compliant with ExpManagerConfig
+        schema = OmegaConf.structured(Wav2VecEncoderModelConfig)
+        cfg = cfg.get('params', {})
+        if isinstance(cfg, dict):
+            cfg = OmegaConf.create(cfg)
+        elif not isinstance(cfg, DictConfig):
+            raise ValueError(f"cfg was type: {type(cfg)}. Expected either a dict or a DictConfig")
+        cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
+        cfg = OmegaConf.merge(schema, cfg)
 
-        transformer_cfg = params_cfg.get('transformer_encoder', {})
-        transformer_encoder_cfg = TransformerEncoderConfig(
-            dropout=transformer_cfg.get('dropout', 0.1),
-            conv=ConvConfig(**transformer_cfg.get('conv', {})),
-            encoder=TransformerSentenceEncoderConfig(**transformer_cfg.get('encoder', {}))
-        )
-
-        loss_cfg = LossConfig(**params_cfg.get('loss', {}))
-
-        feature_enc_layers = conv_cfg.conv_feature_layers
+        feature_enc_layers = cfg.conv_features.conv_feature_layers
         self.embed = feature_enc_layers[-1][0]
 
         self.feature_extractor = ConvFeatureExtractionModel(
             conv_layers=feature_enc_layers,
             dropout=0.0,
-            mode=conv_cfg.extractor_mode,
-            conv_bias=conv_cfg.conv_bias
+            mode=cfg.conv_features.extractor_mode,
+            conv_bias=cfg.conv_features.conv_bias
         )
 
-        encoder_embed_dim = transformer_encoder_cfg.encoder.embedding_dim
+        encoder_embed_dim = cfg.transformer_encoder.encoder.embedding_dim
         self.post_extract_proj = (
             nn.Linear(self.embed, encoder_embed_dim)
-            if self.embed != encoder_embed_dim and not quantize_cfg.quantize_input
+            if self.embed != encoder_embed_dim and not cfg.quantize.quantize_input
             else None
         )
 
-        self.mask_prob = encoder_cfg.mask_prob
-        self.mask_selection = encoder_cfg.mask_selection
-        self.mask_other = encoder_cfg.mask_other
-        self.mask_length = encoder_cfg.mask_length
-        self.no_mask_overlap = encoder_cfg.no_mask_overlap
-        self.mask_min_space = encoder_cfg.mask_min_space
+        self.mask_prob = cfg.mask_prob
+        self.mask_selection = cfg.mask_selection
+        self.mask_other = cfg.mask_other
+        self.mask_length = cfg.mask_length
+        self.no_mask_overlap = cfg.no_mask_overlap
+        self.mask_min_space = cfg.mask_min_space
 
-        self.mask_channel_prob = encoder_cfg.mask_channel_prob
-        self.mask_channel_selection = encoder_cfg.mask_channel_selection
-        self.mask_channel_other = encoder_cfg.mask_channel_other
-        self.mask_channel_length = encoder_cfg.mask_channel_length
-        self.no_mask_channel_overlap = encoder_cfg.no_mask_channel_overlap
-        self.mask_channel_min_space = encoder_cfg.mask_channel_min_space
+        self.mask_channel_prob = cfg.mask_channel_prob
+        self.mask_channel_selection = cfg.mask_channel_selection
+        self.mask_channel_other = cfg.mask_channel_other
+        self.mask_channel_length = cfg.mask_channel_length
+        self.no_mask_channel_overlap = cfg.no_mask_channel_overlap
+        self.mask_channel_min_space = cfg.mask_channel_min_space
 
-        self.dropout_input = nn.Dropout(encoder_cfg.dropout_input)
-        self.dropout_features = nn.Dropout(encoder_cfg.dropout_features)
+        self.dropout_input = nn.Dropout(cfg.dropout_input)
+        self.dropout_features = nn.Dropout(cfg.dropout_features)
 
-        self.feature_grad_mult = encoder_cfg.feature_grad_mult
+        self.feature_grad_mult = cfg.feature_grad_mult
 
         self.quantizer = None
         self.input_quantizer = None
 
-        self.n_negatives = encoder_cfg.n_negatives
-        self.cross_sample_negatives = encoder_cfg.cross_sample_negatives
-        self.codebook_negatives = encoder_cfg.codebook_negatives
-        self.negatives_from_everywhere = encoder_cfg.negatives_from_everywhere
+        self.n_negatives = cfg.n_negatives
+        self.cross_sample_negatives = cfg.cross_sample_negatives
+        self.codebook_negatives = cfg.codebook_negatives
+        self.negatives_from_everywhere = cfg.negatives_from_everywhere
 
-        self.logit_temp = encoder_cfg.logit_temp
+        self.logit_temp = cfg.logit_temp
 
-        final_dim = encoder_cfg.final_dim if encoder_cfg.final_dim > 0 else encoder_embed_dim
+        final_dim = cfg.final_dim if cfg.final_dim > 0 else encoder_embed_dim
 
-        if quantize_cfg.quantize_targets:
-            vq_dim = quantize_cfg.latent_dim if quantize_cfg.latent_dim > 0 else final_dim
+        if cfg.quantize.quantize_targets:
+            vq_dim = cfg.quantize.latent_dim if cfg.quantize.latent_dim > 0 else final_dim
             self.quantizer = GumbelVectorQuantizer(
                 dim=self.embed,
-                num_vars=quantize_cfg.latent_vars,
-                temp=quantize_cfg.latent_temp,
-                groups=quantize_cfg.latent_groups,
+                num_vars=cfg.quantize.latent_vars,
+                temp=cfg.quantize.latent_temp,
+                groups=cfg.quantize.latent_groups,
                 combine_groups=False,
                 vq_dim=vq_dim,
                 time_first=True,
@@ -131,19 +127,19 @@ class Wav2VecEncoderModel(ModelPT):
         else:
             self.project_q = nn.Linear(self.embed, final_dim)
 
-        if quantize_cfg.quantize_input:
-            if quantize_cfg.same_quantizer and self.quantizer is not None:
+        if cfg.quantize.quantize_input:
+            if cfg.quantize.same_quantizer and self.quantizer is not None:
                 vq_dim = final_dim
                 self.input_quantizer = self.quantizer
             else:
                 vq_dim = (
-                    quantize_cfg.latent_dim if quantize_cfg.latent_dim > 0 else encoder_embed_dim
+                    cfg.quantize.latent_dim if cfg.quantize.latent_dim > 0 else encoder_embed_dim
                 )
                 self.input_quantizer = GumbelVectorQuantizer(
                     dim=self.embed,
-                    num_vars=quantize_cfg.latent_vars,
-                    temp=quantize_cfg.latent_temp,
-                    groups=quantize_cfg.latent_groups,
+                    num_vars=cfg.quantize.latent_vars,
+                    temp=cfg.quantize.latent_temp,
+                    groups=cfg.quantize.latent_groups,
                     combine_groups=False,
                     vq_dim=vq_dim,
                     time_first=True,
@@ -154,19 +150,19 @@ class Wav2VecEncoderModel(ModelPT):
             torch.FloatTensor(encoder_embed_dim).uniform_()
         )
 
-        self.encoder = TransformerEncoder(transformer_encoder_cfg)
+        self.encoder = TransformerEncoder(cfg.transformer_encoder)
         self.layer_norm = nn.LayerNorm(self.embed)
 
         self.target_glu = None
-        if encoder_cfg.target_glu:
+        if cfg.target_glu:
             self.target_glu = nn.Sequential(
                 nn.Linear(final_dim, final_dim * 2), nn.GLU()
             )
 
         self.final_proj = nn.Linear(encoder_embed_dim, final_dim)
         self.loss = Wav2vecCriterion(
-            infonce=loss_cfg.infonce,
-            loss_weights=loss_cfg.loss_weights
+            infonce=cfg.loss.infonce,
+            loss_weights=cfg.loss.loss_weights
         )
 
     def setup_dataloader(self, config: DictConfig):

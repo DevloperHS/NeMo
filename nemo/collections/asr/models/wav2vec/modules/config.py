@@ -69,21 +69,6 @@ class ConvFeaturesConfig:
 
 
 @dataclass
-class DataConfig:
-    manifest_path: str = ''
-    sample_rate: int = 16000
-    min_duration: Optional[int] = field(default_factory=lambda: None)
-    max_duration: Optional[int] = field(default_factory=lambda: None)
-    batch_size: int = 32
-    int_values: bool = False
-    trim: bool = False
-    drop_last: bool = False
-    shuffle: bool = False
-    num_workers: int = 0
-    pin_memory: bool = False
-
-
-@dataclass
 class LossConfig:
     infonce: bool = True
     loss_weights: Optional[tuple] = (0.1, 10)
@@ -91,6 +76,11 @@ class LossConfig:
 
 @dataclass
 class Wav2VecEncoderModelConfig:
+    loss: LossConfig = LossConfig()
+    quantize: QuantizeConfig = QuantizeConfig()
+    conv_features: ConvFeaturesConfig = ConvFeaturesConfig()
+    transformer_encoder: TransformerEncoderConfig = TransformerEncoderConfig()
+
     mask_prob: float = 0.65
     mask_selection: str = 'static'
     mask_other: int = 0

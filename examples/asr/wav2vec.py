@@ -11,11 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 import pytorch_lightning as pl
 from omegaconf import DictConfig
 
 from nemo.collections.asr.models.wav2vec.wav2vec_model import Wav2VecEncoderModel
 from nemo.core.config import hydra_runner
+from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
 
 """
@@ -74,6 +76,8 @@ Overide optimizer entirely
 
 @hydra_runner(config_path="conf", config_name="wav2vec")
 def main(cfg: DictConfig):
+    logging.info("Application config\n" + cfg.pretty())
+
     trainer = pl.Trainer(**cfg.trainer)
     exp_manager(trainer, cfg.get("exp_manager", None))
 
