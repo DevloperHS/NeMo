@@ -17,6 +17,7 @@ model:
     batch_size: 32
     shuffle: False
     num_workers: 0
+    max_sample_size: 50000 # Roughly 3 second clips. Should remove for non-experimental runs
   test_ds:
     manifest_filepath: null
     sample_rate: 16000
