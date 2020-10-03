@@ -19,6 +19,7 @@ import braceexpand
 import torch
 import webdataset as wd
 from torch.nn import functional as F
+import numpy as np
 
 from nemo.collections.asr.data import vocabs
 from nemo.collections.asr.parts import collections, parsers
@@ -78,7 +79,7 @@ def _speech_collate_fn(batch, pad_id):
     return audio_signal, audio_lengths, tokens, tokens_lengths
 
 
-def _padding_collate_fn(batch, pad_id):
+def _padding_collate_fn(batch, pad_id, max_sample_size):
     """collate batch of audio sig, audio len, tokens, tokens len
     Args:
         batch (Optional[FloatTensor], Optional[LongTensor], LongTensor,
@@ -86,11 +87,17 @@ def _padding_collate_fn(batch, pad_id):
                encoded tokens, and encoded tokens length.  This collate func
                assumes the signals are 1d torch tensors (i.e. mono audio).
     """
+
+    '''
+    we want to ensure all samples in the batch are sliced to max_sample_size length.
+    '''
     _, audio_lengths, _, tokens_lengths = zip(*batch)
     max_audio_len = 0
     has_audio = audio_lengths[0] is not None
     if has_audio:
         max_audio_len = max(audio_lengths).item()
+        if max_sample_size > 0:
+            max_audio_len = min(max_audio_len, max_sample_size)
     max_tokens_len = max(tokens_lengths).item()
 
     audio_signal, tokens = [], []
@@ -100,6 +107,11 @@ def _padding_collate_fn(batch, pad_id):
             if sig_len < max_audio_len:
                 pad = (0, max_audio_len - sig_len)
                 sig = torch.nn.functional.pad(sig, pad)
+            if sig_len > max_audio_len:
+                sig = crop_to_max_size(
+                    wav=sig,
+                    target_size=max_audio_len
+                )
             audio_signal.append(sig)
         tokens_i_len = tokens_i_len.item()
         if tokens_i_len < max_tokens_len:
@@ -121,6 +133,17 @@ def _padding_collate_fn(batch, pad_id):
         padding_mask[x][:length] = False
 
     return audio_signal, audio_lengths, tokens, tokens_lengths, padding_mask
+
+
+def crop_to_max_size(wav, target_size):
+    size = len(wav)
+    diff = size - target_size
+    if diff <= 0:
+        return wav
+
+    start = np.random.randint(0, diff + 1)
+    end = size - diff + start
+    return wav[start:end]
 
 
 class _AudioTextDataset(Dataset):
@@ -185,7 +208,8 @@ class _AudioTextDataset(Dataset):
             pad_id: int = 0,
             load_audio: bool = True,
             add_misc: bool = False,
-            return_pad_mask: bool = False
+            return_pad_mask: bool = False,
+            max_sample_size: int = 0
     ):
         self.parser = parser
 
@@ -203,6 +227,7 @@ class _AudioTextDataset(Dataset):
         self.bos_id = bos_id
         self.pad_id = pad_id
         self.return_pad_mask = return_pad_mask
+        self.max_sample_size = max_sample_size
         self.load_audio = load_audio
         self._add_misc = add_misc
 
@@ -245,9 +270,16 @@ class _AudioTextDataset(Dataset):
 
     def _collate_fn(self, batch):
         if self.return_pad_mask:
-            return _padding_collate_fn(batch, pad_id=self.pad_id)
+            return _padding_collate_fn(
+                batch,
+                pad_id=self.pad_id,
+                max_sample_size=self.max_sample_size
+            )
         else:
-            return _speech_collate_fn(batch, pad_id=self.pad_id)
+            return _speech_collate_fn(
+                batch,
+                pad_id=self.pad_id
+            )
 
 
 @experimental
@@ -322,7 +354,8 @@ class AudioToCharDataset(_AudioTextDataset):
             load_audio: bool = True,
             parser: Union[str, Callable] = 'en',
             add_misc: bool = False,
-            return_pad_mask: bool = False
+            return_pad_mask: bool = False,
+            max_sample_size: int = 0
     ):
         self.labels = labels
 
@@ -345,7 +378,8 @@ class AudioToCharDataset(_AudioTextDataset):
             pad_id=pad_id,
             load_audio=load_audio,
             add_misc=add_misc,
-            return_pad_mask=return_pad_mask
+            return_pad_mask=return_pad_mask,
+            max_sample_size=max_sample_size
         )
 
 
@@ -535,6 +569,8 @@ class AudioToBPEDataset(_AudioTextDataset):
             trim: bool = False,
             load_audio: bool = True,
             add_misc: bool = False,
+            return_pad_mask: bool = False,
+            max_sample_size: int = 0
     ):
         if hasattr(tokenizer, 'bos_token'):
             bos_id = tokenizer.bos_id
@@ -574,6 +610,8 @@ class AudioToBPEDataset(_AudioTextDataset):
             trim=trim,
             load_audio=load_audio,
             add_misc=add_misc,
+            return_pad_mask=return_pad_mask,
+            max_sample_size=max_sample_size
         )
 
 
@@ -758,7 +796,8 @@ class _TarredAudioToTextDataset(IterableDataset):
             pad_id: int = 0,
             global_rank: int = 0,
             world_size: int = 0,
-            return_pad_mask: bool = False
+            return_pad_mask: bool = False,
+            max_sample_size: int = 0
     ):
         self.collection = collections.ASRAudioText(
             manifests_files=manifest_filepath.split(','),
@@ -775,6 +814,7 @@ class _TarredAudioToTextDataset(IterableDataset):
         self.bos_id = bos_id
         self.pad_id = pad_id
         self.return_pad_mask = return_pad_mask
+        self.max_sample_size = max_sample_size
         self._add_misc = add_misc
 
         if isinstance(audio_tar_filepaths, str):
@@ -846,9 +886,16 @@ class _TarredAudioToTextDataset(IterableDataset):
 
     def _collate_fn(self, batch):
         if self.return_pad_mask:
-            return _padding_collate_fn(batch, self.pad_id)
+            return _padding_collate_fn(
+                batch,
+                self.pad_id,
+                self.max_sample_size
+            )
         else:
-            return _speech_collate_fn(batch, self.pad_id)
+            return _speech_collate_fn(
+                batch,
+                self.pad_id
+            )
 
     def _build_sample(self, tup):
         """Builds the training sample by combining the data from the WebDataset with the manifest info.
@@ -991,7 +1038,8 @@ class TarredAudioToCharDataset(_TarredAudioToTextDataset):
             pad_id: int = 0,
             global_rank: int = 0,
             world_size: int = 0,
-            return_pad_mask: bool = False
+            return_pad_mask: bool = False,
+            max_sample_size: int = 0
     ):
         self.labels = labels
 
@@ -1016,6 +1064,7 @@ class TarredAudioToCharDataset(_TarredAudioToTextDataset):
             add_misc=add_misc,
             pad_id=pad_id,
             return_pad_mask=return_pad_mask,
+            max_sample_size=max_sample_size,
             global_rank=global_rank,
             world_size=world_size
         )
@@ -1097,7 +1146,8 @@ class TarredAudioToBPEDataset(_TarredAudioToTextDataset):
             add_misc: bool = False,
             global_rank: int = 0,
             world_size: int = 0,
-            return_pad_mask: bool = False
+            return_pad_mask: bool = False,
+            max_sample_size: int = 0
     ):
         if hasattr(tokenizer, 'bos_token'):
             bos_id = tokenizer.bos_id
@@ -1139,6 +1189,7 @@ class TarredAudioToBPEDataset(_TarredAudioToTextDataset):
             add_misc=add_misc,
             pad_id=pad_id,
             return_pad_mask=return_pad_mask,
+            max_sample_size=max_sample_size,
             global_rank=global_rank,
             world_size=world_size,
         )

@@ -203,7 +203,9 @@ class Wav2VecEncoderModel(ModelPT):
                 trim=config.get('trim_silence', False),
                 global_rank=self.global_rank,
                 world_size=self.world_size,
-                return_pad_mask=True
+                return_pad_mask=True,
+                min_sample_size=config.get('min_sample_size', 0),
+                max_sample_size=config.get('max_sample_size', 0)
             )
             shuffle = False
         else:
@@ -220,7 +222,9 @@ class Wav2VecEncoderModel(ModelPT):
                 max_duration=config.get('max_duration', None),
                 min_duration=config.get('min_duration', None),
                 max_utts=config.get('max_utts', 0),
-                return_pad_mask=True
+                return_pad_mask=True,
+                min_sample_size=config.get('min_sample_size', 0),
+                max_sample_size=config.get('max_sample_size', 0)
             )
 
         return torch.utils.data.DataLoader(
