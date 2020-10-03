@@ -131,7 +131,6 @@ def _padding_collate_fn(batch, pad_id, max_sample_size):
     )
     for x, length in enumerate(audio_lengths):
         padding_mask[x][:length] = False
-
     return audio_signal, audio_lengths, tokens, tokens_lengths, padding_mask
 
 
