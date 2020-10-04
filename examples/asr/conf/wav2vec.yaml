@@ -6,21 +6,21 @@ model:
     sample_rate: 16000
     batch_size: 32
     shuffle: True
-    num_workers: 0
+    num_workers: 4
     max_sample_size: 50000 # Roughly 3 second clips. Should remove for non-experimental runs
   validation_ds:
     manifest_filepath: ???
     sample_rate: 16000
     batch_size: 32
     shuffle: False
-    num_workers: 0
+    num_workers: 1
     max_sample_size: 50000 # Roughly 3 second clips. Should remove for non-experimental runs
   test_ds:
     manifest_filepath: null
     sample_rate: 16000
     batch_size: 32
     shuffle: False
-    num_workers: 0
+    num_workers: 4
   optim:
     name: adam
     lr: 0.0005
