@@ -1,6 +1,5 @@
 import logging
 import math
-import pickle
 from typing import Optional, Tuple, List
 
 import numpy as np
@@ -13,7 +12,7 @@ from torch import nn
 from nemo.collections.asr.data.audio_to_text import TarredAudioToCharDataset, AudioToCharDataset
 from nemo.collections.asr.losses.wav2vecloss import Wav2vecCriterion
 from nemo.collections.asr.models.wav2vec.modules.config import TransformerSentenceEncoderConfig, \
-    TransformerEncoderConfig, QuantizeConfig, ConvFeaturesConfig, Wav2VecEncoderModelConfig, ConvConfig, LossConfig
+    TransformerEncoderConfig, Wav2VecEncoderModelConfig
 from nemo.collections.asr.models.wav2vec.modules.gumbel_vector_quantizer import GumbelVectorQuantizer
 from nemo.collections.asr.models.wav2vec.modules.multihead_attention import MultiheadAttention
 from nemo.collections.asr.models.wav2vec.modules.norm import Fp32LayerNorm, Fp32GroupNorm
@@ -245,35 +244,23 @@ class Wav2VecEncoderModel(ModelPT):
             model=self,
             sample=batch
         )
-        logs = {
-            'train_loss': loss,
-            'learning_rate': self._optimizer.param_groups[0]['lr'],
-        }
-        return {'loss': loss, 'log': logs}
+        self.log('train_loss', loss)
+        self.log('learning_rate', self._optimizer.param_groups[0]['lr'])
+        return {'loss': loss}
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
         loss, sample_size, logging_output = self.loss(
             model=self,
             sample=batch
         )
-        return {'val_loss': loss}
+        self.log('val_loss', loss, prog_bar=True, on_epoch=True)
 
     def test_step(self, batch, batch_idx, dataloader_idx=0):
         loss, sample_size, logging_output = self.loss(
             model=self,
             sample=batch
         )
-        return {'test_loss': loss}
-
-    def multi_validation_epoch_end(self, outputs, dataloader_idx: int = 0):
-        val_loss_mean = torch.stack([x['val_loss'] for x in outputs]).mean()
-        logs = {'validation_loss': val_loss_mean}
-        return {'val_loss': val_loss_mean, 'log': logs}
-
-    def multi_test_epoch_end(self, outputs, dataloader_idx: int = 0):
-        val_loss_mean = torch.stack([x['test_loss'] for x in outputs]).mean()
-        logs = {'test_loss': val_loss_mean}
-        return {'test_loss': val_loss_mean, 'log': logs}
+        self.log('test_loss', loss, prog_bar=True, on_epoch=True)
 
     @classmethod
     def list_available_models(cls) -> Optional[PretrainedModelInfo]:
