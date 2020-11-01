@@ -15,7 +15,6 @@
 import collections
 import json
 import os
-from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
 
 import pandas as pd
@@ -33,11 +32,7 @@ class _Collection(collections.UserList):
 class Text(_Collection):
     """Simple list of preprocessed text entries, result in list of tokens."""
 
-    @dataclass
-    class TextEntity:
-        tokens: List
-
-    OUTPUT_TYPE = TextEntity
+    OUTPUT_TYPE = collections.namedtuple('TextEntity', 'tokens')
 
     def __init__(self, texts: List[str], parser: parsers.CharParser):
         """Instantiates text manifest and do the preprocessing step.
@@ -95,18 +90,9 @@ class FromFileText(Text):
 class AudioText(_Collection):
     """List of audio-transcript text correspondence with preprocessing."""
 
-    @dataclass
-    class AudioTextEntity:
-        id: str
-        audio_file: str
-        duration: float
-        text_tokens: List
-        offset: str
-        text_raw: str
-        speaker: Optional[int]
-        orig_sr: int
-
-    OUTPUT_TYPE = AudioTextEntity
+    OUTPUT_TYPE = collections.namedtuple(
+        typename='AudioTextEntity', field_names='id audio_file duration text_tokens offset text_raw speaker orig_sr',
+    )
 
     def __init__(
         self,
@@ -219,25 +205,18 @@ class ASRAudioText(AudioText):
 class SpeechLabel(_Collection):
     """List of audio-label correspondence with preprocessing."""
 
-    @dataclass
-    class SpeechLabelEntity:
-        audio_file: str
-        duration: float
-        label: Union[int, str]
-        offset: float
-
-    OUTPUT_TYPE = SpeechLabelEntity
+    OUTPUT_TYPE = collections.namedtuple(typename='SpeechLabelEntity', field_names='audio_file duration label offset',)
 
     def __init__(
-            self,
-            audio_files: List[str],
-            durations: List[float],
-            labels: List[Union[int, str]],
-            offsets: List[Optional[float]],
-            min_duration: Optional[float] = None,
-            max_duration: Optional[float] = None,
-            max_number: Optional[int] = None,
-            do_sort_by_duration: bool = False,
+        self,
+        audio_files: List[str],
+        durations: List[float],
+        labels: List[Union[int, str]],
+        offsets: List[Optional[float]],
+        min_duration: Optional[float] = None,
+        max_duration: Optional[float] = None,
+        max_number: Optional[int] = None,
+        do_sort_by_duration: bool = False,
     ):
         """Instantiates audio-label manifest with filters and preprocessing.
 
