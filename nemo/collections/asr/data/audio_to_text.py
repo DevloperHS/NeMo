@@ -87,10 +87,6 @@ def _padding_collate_fn(batch, pad_id, max_sample_size):
                encoded tokens, and encoded tokens length.  This collate func
                assumes the signals are 1d torch tensors (i.e. mono audio).
     """
-
-    '''
-    we want to ensure all samples in the batch are sliced to max_sample_size length.
-    '''
     _, audio_lengths, _, tokens_lengths = zip(*batch)
     max_audio_len = 0
     has_audio = audio_lengths[0] is not None
