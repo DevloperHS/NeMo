@@ -9,7 +9,6 @@ import torch.nn.functional as F
 
 
 class Wav2vecCriterion(torch.nn.Module):
-
     def __init__(self, infonce=True, loss_weights=None, log_keys=None):
         super().__init__()
         self.infonce = infonce
@@ -38,10 +37,11 @@ class Wav2vecCriterion(torch.nn.Module):
         losses = []
 
         if self.infonce:
-            loss = F.cross_entropy(logits, target, reduction="sum" if reduce else "none", )
+            loss = F.cross_entropy(logits, target, reduction="sum" if reduce else "none",)
         else:
-            loss = F.binary_cross_entropy_with_logits(logits, target.float(), weights,
-                                                      reduction="sum" if reduce else "none", )
+            loss = F.binary_cross_entropy_with_logits(
+                logits, target.float(), weights, reduction="sum" if reduce else "none",
+            )
 
         sample_size = target.numel() if self.infonce else target.long().sum().item()
         losses.append(loss.detach().clone())

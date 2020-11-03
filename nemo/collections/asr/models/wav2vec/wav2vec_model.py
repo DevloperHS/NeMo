@@ -1,6 +1,6 @@
 import logging
 import math
-from typing import Optional, Tuple, List
+from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -9,13 +9,16 @@ from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning import Trainer
 from torch import nn
 
-from nemo.collections.asr.data.audio_to_text import TarredAudioToCharDataset, AudioToCharDataset
+from nemo.collections.asr.data.audio_to_text import AudioToCharDataset, TarredAudioToCharDataset
 from nemo.collections.asr.losses.wav2vecloss import Wav2vecCriterion
-from nemo.collections.asr.models.wav2vec.modules.config import TransformerSentenceEncoderConfig, \
-    TransformerEncoderConfig, Wav2VecEncoderModelConfig
+from nemo.collections.asr.models.wav2vec.modules.config import (
+    TransformerEncoderConfig,
+    TransformerSentenceEncoderConfig,
+    Wav2VecEncoderModelConfig,
+)
 from nemo.collections.asr.models.wav2vec.modules.gumbel_vector_quantizer import GumbelVectorQuantizer
 from nemo.collections.asr.models.wav2vec.modules.multihead_attention import MultiheadAttention
-from nemo.collections.asr.models.wav2vec.modules.norm import Fp32LayerNorm, Fp32GroupNorm
+from nemo.collections.asr.models.wav2vec.modules.norm import Fp32GroupNorm, Fp32LayerNorm
 from nemo.collections.asr.models.wav2vec.modules.utils import compute_mask_indices
 from nemo.collections.asr.parts.perturb import process_augmentations
 from nemo.core import ModelPT
@@ -44,7 +47,6 @@ class GradMultiply(torch.autograd.Function):
 
 
 class Wav2VecEncoderModel(ModelPT):
-
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         # Get global rank and total number of GPU workers for IterableDataset partitioning, if applicable
         self.global_rank = 0
@@ -71,7 +73,7 @@ class Wav2VecEncoderModel(ModelPT):
             conv_layers=feature_enc_layers,
             dropout=0.0,
             mode=cfg.conv_features.extractor_mode,
-            conv_bias=cfg.conv_features.conv_bias
+            conv_bias=cfg.conv_features.conv_bias,
         )
 
         encoder_embed_dim = cfg.transformer_encoder.encoder.embedding_dim
@@ -132,9 +134,7 @@ class Wav2VecEncoderModel(ModelPT):
                 vq_dim = final_dim
                 self.input_quantizer = self.quantizer
             else:
-                vq_dim = (
-                    cfg.quantize.latent_dim if cfg.quantize.latent_dim > 0 else encoder_embed_dim
-                )
+                vq_dim = cfg.quantize.latent_dim if cfg.quantize.latent_dim > 0 else encoder_embed_dim
                 self.input_quantizer = GumbelVectorQuantizer(
                     dim=self.embed,
                     num_vars=cfg.quantize.latent_vars,
@@ -146,24 +146,17 @@ class Wav2VecEncoderModel(ModelPT):
                 )
             self.project_inp = nn.Linear(vq_dim, encoder_embed_dim)
 
-        self.mask_emb = nn.Parameter(
-            torch.FloatTensor(encoder_embed_dim).uniform_()
-        )
+        self.mask_emb = nn.Parameter(torch.FloatTensor(encoder_embed_dim).uniform_())
 
         self.encoder = TransformerEncoder(cfg.transformer_encoder)
         self.layer_norm = nn.LayerNorm(self.embed)
 
         self.target_glu = None
         if cfg.target_glu:
-            self.target_glu = nn.Sequential(
-                nn.Linear(final_dim, final_dim * 2), nn.GLU()
-            )
+            self.target_glu = nn.Sequential(nn.Linear(final_dim, final_dim * 2), nn.GLU())
 
         self.final_proj = nn.Linear(encoder_embed_dim, final_dim)
-        self.loss = Wav2vecCriterion(
-            infonce=cfg.loss.infonce,
-            loss_weights=cfg.loss.loss_weights
-        )
+        self.loss = Wav2vecCriterion(infonce=cfg.loss.infonce, loss_weights=cfg.loss.loss_weights)
 
     def setup_dataloader(self, config: DictConfig):
         if 'augmentor' in config:
@@ -176,7 +169,7 @@ class Wav2VecEncoderModel(ModelPT):
         # Instantiate tarred dataset loader or normal dataset loader
         if config.get('is_tarred', False):
             if ('tarred_audio_filepaths' in config and config['tarred_audio_filepaths'] is None) or (
-                    'manifest_filepath' in config and config['manifest_filepath'] is None
+                'manifest_filepath' in config and config['manifest_filepath'] is None
             ):
                 logging.warning(
                     "Could not load dataset as `manifest_filepath` was None or "
@@ -200,7 +193,7 @@ class Wav2VecEncoderModel(ModelPT):
                 global_rank=self.global_rank,
                 world_size=self.world_size,
                 return_pad_mask=True,
-                max_sample_size=config.get('max_sample_size', 0)
+                max_sample_size=config.get('max_sample_size', 0),
             )
             shuffle = False
         else:
@@ -218,7 +211,7 @@ class Wav2VecEncoderModel(ModelPT):
                 min_duration=config.get('min_duration', None),
                 max_utts=config.get('max_utts', 0),
                 return_pad_mask=True,
-                max_sample_size=config.get('max_sample_size', 0)
+                max_sample_size=config.get('max_sample_size', 0),
             )
 
         return torch.utils.data.DataLoader(
@@ -240,26 +233,17 @@ class Wav2VecEncoderModel(ModelPT):
         self._test_dl = self.setup_dataloader(test_data_config)
 
     def training_step(self, batch, batch_ix):
-        loss, sample_size, logging_output = self.loss(
-            model=self,
-            sample=batch
-        )
+        loss, sample_size, logging_output = self.loss(model=self, sample=batch)
         self.log('train_loss', loss)
         self.log('learning_rate', self._optimizer.param_groups[0]['lr'])
         return {'loss': loss}
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
-        loss, sample_size, logging_output = self.loss(
-            model=self,
-            sample=batch
-        )
+        loss, sample_size, logging_output = self.loss(model=self, sample=batch)
         self.log('val_loss', loss, prog_bar=True, on_epoch=True)
 
     def test_step(self, batch, batch_idx, dataloader_idx=0):
-        loss, sample_size, logging_output = self.loss(
-            model=self,
-            sample=batch
-        )
+        loss, sample_size, logging_output = self.loss(model=self, sample=batch)
         self.log('test_loss', loss, prog_bar=True, on_epoch=True)
 
     @classmethod
@@ -297,12 +281,7 @@ class Wav2VecEncoderModel(ModelPT):
                 no_overlap=self.no_mask_channel_overlap,
                 min_space=self.mask_channel_min_space,
             )
-            mask_channel_indices = (
-                torch.from_numpy(mask_channel_indices)
-                    .to(x.device)
-                    .unsqueeze(1)
-                    .expand(-1, T, -1)
-            )
+            mask_channel_indices = torch.from_numpy(mask_channel_indices).to(x.device).unsqueeze(1).expand(-1, T, -1)
             x[mask_channel_indices] = 0
 
         return x, mask_indices
@@ -321,30 +300,16 @@ class Wav2VecEncoderModel(ModelPT):
             assert high > 1, f"{bsz, tsz, fsz}"
 
             if self.n_negatives > 0:
-                tszs = (
-                    buffered_arange(num)
-                        .unsqueeze(-1)
-                        .expand(-1, self.n_negatives)
-                        .flatten()
-                )
+                tszs = buffered_arange(num).unsqueeze(-1).expand(-1, self.n_negatives).flatten()
 
-                neg_idxs = torch.randint(
-                    low=0, high=high - 1, size=(bsz, self.n_negatives * num)
-                )
+                neg_idxs = torch.randint(low=0, high=high - 1, size=(bsz, self.n_negatives * num))
                 neg_idxs[neg_idxs >= tszs] += 1
 
             if self.cross_sample_negatives > 0:
-                tszs = (
-                    buffered_arange(num)
-                        .unsqueeze(-1)
-                        .expand(-1, self.cross_sample_negatives)
-                        .flatten()
-                )
+                tszs = buffered_arange(num).unsqueeze(-1).expand(-1, self.cross_sample_negatives).flatten()
 
                 cross_neg_idxs = torch.randint(
-                    low=0,
-                    high=cross_high - 1,
-                    size=(bsz, self.cross_sample_negatives * num),
+                    low=0, high=cross_high - 1, size=(bsz, self.cross_sample_negatives * num),
                 )
                 cross_neg_idxs[cross_neg_idxs >= tszs] += 1
 
@@ -358,9 +323,7 @@ class Wav2VecEncoderModel(ModelPT):
             neg_idxs = torch.cat([neg_idxs, cross_neg_idxs], dim=1)
 
         negs = y[neg_idxs.view(-1)]
-        negs = negs.view(
-            bsz, num, self.n_negatives + self.cross_sample_negatives, fsz
-        ).permute(
+        negs = negs.view(bsz, num, self.n_negatives + self.cross_sample_negatives, fsz).permute(
             2, 0, 1, 3
         )  # to NxBxTxC
         return negs, neg_idxs
@@ -426,9 +389,7 @@ class Wav2VecEncoderModel(ModelPT):
         if mask:
             x, mask_indices = self.apply_mask(features, padding_mask)
             if mask_indices is not None:
-                y = unmasked_features[mask_indices].view(
-                    unmasked_features.size(0), -1, unmasked_features.size(-1)
-                )
+                y = unmasked_features[mask_indices].view(unmasked_features.size(0), -1, unmasked_features.size(-1))
             else:
                 y = unmasked_features
         else:
@@ -459,12 +420,8 @@ class Wav2VecEncoderModel(ModelPT):
                 negs, _ = self.sample_negatives(y, y.size(1))
 
             if self.codebook_negatives > 0:
-                cb_negs = self.quantizer.sample_from_codebook(
-                    y.size(0) * y.size(1), self.codebook_negatives
-                )
-                cb_negs = cb_negs.view(
-                    self.codebook_negatives, y.size(0), y.size(1), -1
-                )  # order doesnt matter
+                cb_negs = self.quantizer.sample_from_codebook(y.size(0) * y.size(1), self.codebook_negatives)
+                cb_negs = cb_negs.view(self.codebook_negatives, y.size(0), y.size(1), -1)  # order doesnt matter
                 cb_negs = self.project_q(cb_negs)
                 negs = torch.cat([negs, cb_negs], dim=0)
         else:
@@ -520,10 +477,7 @@ class Wav2VecEncoderModel(ModelPT):
         pen = []
 
         if "prob_perplexity" in net_output:
-            pen.append(
-                (net_output["num_vars"] - net_output["prob_perplexity"])
-                / net_output["num_vars"]
-            )
+            pen.append((net_output["num_vars"] - net_output["prob_perplexity"]) / net_output["num_vars"])
 
         if "features_pen" in net_output:
             pen.append(net_output["features_pen"])
@@ -544,51 +498,36 @@ class TransposeLast(nn.Module):
 
 class ConvFeatureExtractionModel(nn.Module):
     def __init__(
-            self,
-            conv_layers: List[Tuple[int, int, int]],
-            dropout: float = 0.0,
-            mode: str = "default",
-            conv_bias: bool = False,
+        self,
+        conv_layers: List[Tuple[int, int, int]],
+        dropout: float = 0.0,
+        mode: str = "default",
+        conv_bias: bool = False,
     ):
         super().__init__()
 
         assert mode in {"default", "layer_norm"}
 
         def block(
-                n_in,
-                n_out,
-                k,
-                stride,
-                is_layer_norm=False,
-                is_group_norm=False,
-                conv_bias=False,
+            n_in, n_out, k, stride, is_layer_norm=False, is_group_norm=False, conv_bias=False,
         ):
             def make_conv():
                 conv = nn.Conv1d(n_in, n_out, k, stride=stride, bias=conv_bias)
                 nn.init.kaiming_normal_(conv.weight)
                 return conv
 
-            assert (
-                           is_layer_norm and is_group_norm
-                   ) == False, "layer norm and group norm are exclusive"
+            assert (is_layer_norm and is_group_norm) == False, "layer norm and group norm are exclusive"
 
             if is_layer_norm:
                 return nn.Sequential(
                     make_conv(),
                     nn.Dropout(p=dropout),
-                    nn.Sequential(
-                        TransposeLast(),
-                        Fp32LayerNorm(dim, elementwise_affine=True),
-                        TransposeLast(),
-                    ),
+                    nn.Sequential(TransposeLast(), Fp32LayerNorm(dim, elementwise_affine=True), TransposeLast(),),
                     nn.GELU(),
                 )
             elif is_group_norm:
                 return nn.Sequential(
-                    make_conv(),
-                    nn.Dropout(p=dropout),
-                    Fp32GroupNorm(dim, dim, affine=True),
-                    nn.GELU(),
+                    make_conv(), nn.Dropout(p=dropout), Fp32GroupNorm(dim, dim, affine=True), nn.GELU(),
                 )
             else:
                 return nn.Sequential(make_conv(), nn.Dropout(p=dropout), nn.GELU())
@@ -651,9 +590,7 @@ class TransformerEncoder(nn.Module):
         self.layers = nn.ModuleList(
             [
                 TransformerSentenceEncoderLayer(
-                    cfg=encoder_cfg,
-                    dropout=self.dropout,
-                    embedding_dim=self.embedding_dim
+                    cfg=encoder_cfg, dropout=self.dropout, embedding_dim=self.embedding_dim
                 )
                 for _ in range(encoder_cfg.encoder_layers)
             ]
@@ -713,10 +650,7 @@ class TransformerSentenceEncoderLayer(nn.Module):
     """
 
     def __init__(
-            self,
-            cfg: TransformerSentenceEncoderConfig,
-            embedding_dim: float = 768,
-            dropout: float = 0.1,
+        self, cfg: TransformerSentenceEncoderConfig, embedding_dim: float = 768, dropout: float = 0.1,
     ) -> None:
 
         super().__init__()
@@ -728,10 +662,7 @@ class TransformerSentenceEncoderLayer(nn.Module):
         # Initialize blocks
         self.activation_fn = cfg.activation_fn.value()
         self.self_attn = MultiheadAttention(
-            self.embedding_dim,
-            cfg.num_attention_heads,
-            dropout=cfg.attention_dropout,
-            self_attention=True,
+            self.embedding_dim, cfg.num_attention_heads, dropout=cfg.attention_dropout, self_attention=True,
         )
 
         self.dropout1 = nn.Dropout(dropout)
@@ -749,11 +680,11 @@ class TransformerSentenceEncoderLayer(nn.Module):
         self.final_layer_norm = nn.LayerNorm(self.embedding_dim)
 
     def forward(
-            self,
-            x: torch.Tensor,
-            self_attn_mask: torch.Tensor = None,
-            self_attn_padding_mask: torch.Tensor = None,
-            need_weights: bool = False
+        self,
+        x: torch.Tensor,
+        self_attn_mask: torch.Tensor = None,
+        self_attn_padding_mask: torch.Tensor = None,
+        need_weights: bool = False,
     ):
         """
         LayerNorm is applied either before or after the self-attention/ffn
@@ -783,11 +714,7 @@ class TransformerSentenceEncoderLayer(nn.Module):
             x = residual + x
         else:
             x, attn = self.self_attn(
-                query=x,
-                key=x,
-                value=x,
-                key_padding_mask=self_attn_padding_mask,
-                need_weights=need_weights,
+                query=x, key=x, value=x, key_padding_mask=self_attn_padding_mask, need_weights=need_weights,
             )
 
             x = self.dropout1(x)

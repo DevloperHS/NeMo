@@ -20,6 +20,7 @@ from nemo.core.config import hydra_runner
 from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
 
+
 """
 
 python examples/asr/wav2vec.py \
@@ -81,10 +82,7 @@ def main(cfg: DictConfig):
     trainer = pl.Trainer(**cfg.trainer)
     exp_manager(trainer, cfg.get("exp_manager", None))
 
-    wav2vec_encoder_model = Wav2VecEncoderModel(
-        cfg=cfg.model,
-        trainer=trainer
-    )
+    wav2vec_encoder_model = Wav2VecEncoderModel(cfg=cfg.model, trainer=trainer)
     trainer.fit(wav2vec_encoder_model)
 
 

@@ -1,19 +1,19 @@
-from typing import Tuple, Optional
+from typing import Optional, Tuple
 
 import numpy as np
 import torch
 
 
 def compute_mask_indices(
-        shape: Tuple[int, int],
-        padding_mask: Optional[torch.Tensor],
-        mask_prob: float,
-        mask_length: int,
-        mask_type: str = "static",
-        mask_other: float = 0.0,
-        min_masks: int = 0,
-        no_overlap: bool = False,
-        min_space: int = 0,
+    shape: Tuple[int, int],
+    padding_mask: Optional[torch.Tensor],
+    mask_prob: float,
+    mask_length: int,
+    mask_type: str = "static",
+    mask_other: float = 0.0,
+    min_masks: int = 0,
+    no_overlap: bool = False,
+    min_space: int = 0,
 ) -> np.ndarray:
     """
     Computes random mask spans for a given shape
@@ -108,13 +108,7 @@ def compute_mask_indices(
 
             mask_idc = np.random.choice(sz - min_len, num_mask, replace=False)
 
-            mask_idc = np.asarray(
-                [
-                    mask_idc[j] + offset
-                    for j in range(len(mask_idc))
-                    for offset in range(lengths[j])
-                ]
-            )
+            mask_idc = np.asarray([mask_idc[j] + offset for j in range(len(mask_idc)) for offset in range(lengths[j])])
 
         mask_idcs.append(np.unique(mask_idc[mask_idc < sz]))
 

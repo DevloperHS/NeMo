@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional, List
+from typing import List, Optional
 
 from torch import nn
 
@@ -54,17 +54,7 @@ class ConvFeaturesConfig:
     extractor_mode: str = 'default'
     conv_bias: bool = False
     conv_feature_layers: List = field(
-        default_factory=lambda:
-        [
-            (512, 10, 5),
-            (512, 8, 4)
-        ] +
-        [
-            (512, 4, 2)
-        ] * 3 +
-        [
-            (512, 1, 1)
-        ]
+        default_factory=lambda: [(512, 10, 5), (512, 8, 4)] + [(512, 4, 2)] * 3 + [(512, 1, 1)]
     )  # Default conv layers as defined in the fairseq repo
 
 
