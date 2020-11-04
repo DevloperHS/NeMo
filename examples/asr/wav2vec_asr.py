@@ -20,7 +20,6 @@ from nemo.collections.asr.models.wav2vec.wav2vec_model import Wav2VecEncoderMode
 from nemo.core.config import hydra_runner
 from nemo.utils.exp_manager import exp_manager
 
-
 """
 
 python examples/asr/wav2vec.py \
@@ -80,6 +79,10 @@ def main(cfg: DictConfig):
     trainer = pl.Trainer(**cfg.trainer)
     exp_manager(trainer, cfg.get("exp_manager", None))
 
-    encoder_model = Wav2VecEncoderModel.load_from_checkpoint(cfg.model.encoder_path)
+    encoder_model = Wav2VecEncoderModel.load_from_checkpoint(cfg['model']['encoder_path'])
     wav2vec_model = Wav2VecASRModel(encoder=encoder_model, cfg=cfg.model, trainer=trainer)
     trainer.fit(wav2vec_model)
+
+
+if __name__ == '__main__':
+    main()  # noqa pylint: disable=no-value-for-parameter
