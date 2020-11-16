@@ -715,30 +715,43 @@ class _TarredAudioToTextDataset(IterableDataset):
         pad_id (id): Token used to pad when collating samples in batches.
             If this is None, pads using 0s.
             Defaults to None.
+        shard_strategy (str): Tarred dataset shard distribution strategy chosen as a str value during ddp.
+            -   `scatter`: The default shard strategy applied by WebDataset, where each node gets
+                a unique set of shards, which are permanently pre-allocated and never changed at runtime.
+            -   `replicate`: Optional shard strategy, where each node gets all of the set of shards
+                available in the tarred dataset, which are permanently pre-allocated and never changed at runtime.
+                The benefit of replication is that it allows each node to sample data points from the entire
+                dataset independently of other nodes, and reduces dependence on value of `shuffle_n`.
+
+                Note: Replicated strategy allows every node to sample the entire set of available tarfiles,
+                and therefore more than one node may sample the same tarfile, and even sample the same
+                data points! As such, there is no assured guarantee that all samples in the dataset will be
+                sampled at least once during 1 epoch.
         global_rank (int): Worker rank, used for partitioning shards. Defaults to 0.
         world_size (int): Total number of processes, used for partitioning shards. Defaults to 0.
     """
 
     def __init__(
-            self,
-            audio_tar_filepaths: Union[str, List[str]],
-            manifest_filepath: str,
-            parser: Callable,
-            sample_rate: int,
-            int_values: bool = False,
-            augmentor: Optional['nemo.collections.asr.parts.perturb.AudioAugmentor'] = None,
-            shuffle_n: int = 0,
-            min_duration: Optional[float] = None,
-            max_duration: Optional[float] = None,
-            max_utts: int = 0,
-            trim: bool = False,
-            bos_id: Optional[int] = None,
-            eos_id: Optional[int] = None,
-            add_misc: bool = False,
-            pad_id: int = 0,
-            global_rank: int = 0,
-            world_size: int = 0,
-            return_pad_mask: bool = False,
+        self,
+        audio_tar_filepaths: Union[str, List[str]],
+        manifest_filepath: str,
+        parser: Callable,
+        sample_rate: int,
+        int_values: bool = False,
+        augmentor: Optional['nemo.collections.asr.parts.perturb.AudioAugmentor'] = None,
+        shuffle_n: int = 0,
+        min_duration: Optional[float] = None,
+        max_duration: Optional[float] = None,
+        max_utts: int = 0,
+        trim: bool = False,
+        bos_id: Optional[int] = None,
+        eos_id: Optional[int] = None,
+        add_misc: bool = False,
+        pad_id: int = 0,
+        shard_strategy: str = "scatter",
+        global_rank: int = 0,
+        world_size: int = 0,
+        return_pad_mask: bool = False,
     ):
         self.collection = collections.ASRAudioText(
             manifests_files=manifest_filepath.split(','),
@@ -756,6 +769,10 @@ class _TarredAudioToTextDataset(IterableDataset):
         self.pad_id = pad_id
         self.return_pad_mask = return_pad_mask
         self._add_misc = add_misc
+
+        valid_shard_strategies = ['scatter', 'replicate']
+        if shard_strategy not in valid_shard_strategies:
+            raise ValueError(f"`shard_strategy` must be one of {valid_shard_strategies}")
 
         if isinstance(audio_tar_filepaths, str):
             # Replace '(' and '[' with '{'
@@ -776,18 +793,27 @@ class _TarredAudioToTextDataset(IterableDataset):
                 # Brace expand
                 audio_tar_filepaths = list(braceexpand.braceexpand(audio_tar_filepaths))
 
-            if len(audio_tar_filepaths) % world_size != 0:
-                logging.warning(
-                    f"Number of shards in tarred dataset ({len(audio_tar_filepaths)}) is not divisible "
-                    f"by number of distributed workers ({world_size})."
+            if shard_strategy == 'scatter':
+                logging.info("All tarred dataset shards will be scattered evenly across all nodes.")
+
+                if len(audio_tar_filepaths) % world_size != 0:
+                    logging.warning(
+                        f"Number of shards in tarred dataset ({len(audio_tar_filepaths)}) is not divisible "
+                        f"by number of distributed workers ({world_size})."
+                    )
+
+                begin_idx = (len(audio_tar_filepaths) // world_size) * global_rank
+                end_idx = begin_idx + (len(audio_tar_filepaths) // world_size)
+                audio_tar_filepaths = audio_tar_filepaths[begin_idx:end_idx]
+                logging.info(
+                    "Partitioning tarred dataset: process (%d) taking shards [%d, %d)", global_rank, begin_idx, end_idx
                 )
 
-            begin_idx = (len(audio_tar_filepaths) // world_size) * global_rank
-            end_idx = begin_idx + (len(audio_tar_filepaths) // world_size)
-            audio_tar_filepaths = audio_tar_filepaths[begin_idx:end_idx]
-            logging.info(
-                "Partitioning tarred dataset: process (%d) taking shards [%d, %d)", global_rank, begin_idx, end_idx
-            )
+            elif shard_strategy == 'replicate':
+                logging.info("All tarred dataset shards will be replicated across all nodes.")
+
+            else:
+                raise ValueError(f"Invalid shard strategy ! Allowed values are : {valid_shard_strategies}")
 
         # Put together WebDataset
         self._dataset = (
@@ -944,34 +970,47 @@ class TarredAudioToCharDataset(_TarredAudioToTextDataset):
         pad_id (id): Token used to pad when collating samples in batches.
             If this is None, pads using 0s.
             Defaults to None.
+        shard_strategy (str): Tarred dataset shard distribution strategy chosen as a str value during ddp.
+            -   `scatter`: The default shard strategy applied by WebDataset, where each node gets
+                a unique set of shards, which are permanently pre-allocated and never changed at runtime.
+            -   `replicate`: Optional shard strategy, where each node gets all of the set of shards
+                available in the tarred dataset, which are permanently pre-allocated and never changed at runtime.
+                The benefit of replication is that it allows each node to sample data points from the entire
+                dataset independently of other nodes, and reduces dependence on value of `shuffle_n`.
+
+                Note: Replicated strategy allows every node to sample the entire set of available tarfiles,
+                and therefore more than one node may sample the same tarfile, and even sample the same
+                data points! As such, there is no assured guarantee that all samples in the dataset will be
+                sampled at least once during 1 epoch.
         global_rank (int): Worker rank, used for partitioning shards. Defaults to 0.
         world_size (int): Total number of processes, used for partitioning shards. Defaults to 0.
     """
 
     def __init__(
-            self,
-            audio_tar_filepaths: Union[str, List[str]],
-            manifest_filepath: str,
-            labels: List[str],
-            sample_rate: int,
-            int_values: bool = False,
-            augmentor: Optional['nemo.collections.asr.parts.perturb.AudioAugmentor'] = None,
-            shuffle_n: int = 0,
-            min_duration: Optional[float] = None,
-            max_duration: Optional[float] = None,
-            max_utts: int = 0,
-            blank_index: int = -1,
-            unk_index: int = -1,
-            normalize: bool = True,
-            trim: bool = False,
-            bos_id: Optional[int] = None,
-            eos_id: Optional[int] = None,
-            parser: Optional[str] = 'en',
-            add_misc: bool = False,
-            pad_id: int = 0,
-            global_rank: int = 0,
-            world_size: int = 0,
-            return_pad_mask: bool = False,
+        self,
+        audio_tar_filepaths: Union[str, List[str]],
+        manifest_filepath: str,
+        labels: List[str],
+        sample_rate: int,
+        int_values: bool = False,
+        augmentor: Optional['nemo.collections.asr.parts.perturb.AudioAugmentor'] = None,
+        shuffle_n: int = 0,
+        min_duration: Optional[float] = None,
+        max_duration: Optional[float] = None,
+        max_utts: int = 0,
+        blank_index: int = -1,
+        unk_index: int = -1,
+        normalize: bool = True,
+        trim: bool = False,
+        bos_id: Optional[int] = None,
+        eos_id: Optional[int] = None,
+        parser: Optional[str] = 'en',
+        add_misc: bool = False,
+        pad_id: int = 0,
+        shard_strategy: str = "scatter",
+        global_rank: int = 0,
+        world_size: int = 0,
+        return_pad_mask: bool = False,
     ):
         self.labels = labels
 
@@ -995,6 +1034,7 @@ class TarredAudioToCharDataset(_TarredAudioToTextDataset):
             eos_id=eos_id,
             add_misc=add_misc,
             pad_id=pad_id,
+            shard_strategy=shard_strategy,
             return_pad_mask=return_pad_mask,
             global_rank=global_rank,
             world_size=world_size,
@@ -1057,28 +1097,41 @@ class TarredAudioToBPEDataset(_TarredAudioToTextDataset):
         pad_id (id): Token used to pad when collating samples in batches.
             If this is None, pads using 0s.
             Defaults to None.
+        shard_strategy (str): Tarred dataset shard distribution strategy chosen as a str value during ddp.
+            -   `scatter`: The default shard strategy applied by WebDataset, where each node gets
+                a unique set of shards, which are permanently pre-allocated and never changed at runtime.
+            -   `replicate`: Optional shard strategy, where each node gets all of the set of shards
+                available in the tarred dataset, which are permanently pre-allocated and never changed at runtime.
+                The benefit of replication is that it allows each node to sample data points from the entire
+                dataset independently of other nodes, and reduces dependence on value of `shuffle_n`.
+
+                Note: Replicated strategy allows every node to sample the entire set of available tarfiles,
+                and therefore more than one node may sample the same tarfile, and even sample the same
+                data points! As such, there is no assured guarantee that all samples in the dataset will be
+                sampled at least once during 1 epoch.
         global_rank (int): Worker rank, used for partitioning shards. Defaults to 0.
         world_size (int): Total number of processes, used for partitioning shards. Defaults to 0.
     """
 
     def __init__(
-            self,
-            audio_tar_filepaths: Union[str, List[str]],
-            manifest_filepath: str,
-            tokenizer: 'nemo.collections.common.tokenizers.TokenizerSpec',
-            sample_rate: int,
-            int_values: bool = False,
-            augmentor: Optional['nemo.collections.asr.parts.perturb.AudioAugmentor'] = None,
-            shuffle_n: int = 0,
-            min_duration: Optional[float] = None,
-            max_duration: Optional[float] = None,
-            max_utts: int = 0,
-            trim: bool = False,
-            add_misc: bool = False,
-            global_rank: int = 0,
-            world_size: int = 0,
-            use_start_end_token: bool = True,
-            return_pad_mask: bool = False,
+        self,
+        audio_tar_filepaths: Union[str, List[str]],
+        manifest_filepath: str,
+        tokenizer: 'nemo.collections.common.tokenizers.TokenizerSpec',
+        sample_rate: int,
+        int_values: bool = False,
+        augmentor: Optional['nemo.collections.asr.parts.perturb.AudioAugmentor'] = None,
+        shuffle_n: int = 0,
+        min_duration: Optional[float] = None,
+        max_duration: Optional[float] = None,
+        max_utts: int = 0,
+        trim: bool = False,
+        add_misc: bool = False,
+        use_start_end_token: bool = True,
+        shard_strategy: str = "scatter",
+        return_pad_mask: bool = False,
+        global_rank: int = 0,
+        world_size: int = 0,
     ):
         if use_start_end_token and hasattr(tokenizer, 'bos_token'):
             bos_id = tokenizer.bos_id
@@ -1119,6 +1172,7 @@ class TarredAudioToBPEDataset(_TarredAudioToTextDataset):
             eos_id=eos_id,
             add_misc=add_misc,
             pad_id=pad_id,
+            shard_strategy=shard_strategy,
             return_pad_mask=return_pad_mask,
             global_rank=global_rank,
             world_size=world_size,
