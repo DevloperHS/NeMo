@@ -233,6 +233,7 @@ class Wav2VecASRModel(ASRModel):
             wer, _, _ = self._wer.compute()
             self.log('training_batch_wer', wer, prog_bar=True)
         self.log('learning_rate', self._optimizer.param_groups[0]['lr'])
+        self.log('train_loss', loss_value)
         return {'loss': loss_value}
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
