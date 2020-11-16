@@ -65,12 +65,7 @@ class LossConfig:
 
 
 @dataclass
-class Wav2VecEncoderModelConfig:
-    loss: LossConfig = LossConfig()
-    quantize: QuantizeConfig = QuantizeConfig()
-    conv_features: ConvFeaturesConfig = ConvFeaturesConfig()
-    transformer_encoder: TransformerEncoderConfig = TransformerEncoderConfig()
-
+class Wav2VecMaskConfig:
     mask_prob: float = 0.65
     mask_selection: str = 'static'
     mask_other: int = 0
@@ -84,6 +79,16 @@ class Wav2VecEncoderModelConfig:
     mask_channel_length: int = 10
     no_mask_channel_overlap: bool = False
     mask_channel_min_space: int = 1
+
+
+@dataclass
+class Wav2VecEncoderModelConfig:
+    loss: LossConfig = LossConfig()
+    quantize: QuantizeConfig = QuantizeConfig()
+    conv_features: ConvFeaturesConfig = ConvFeaturesConfig()
+    transformer_encoder: TransformerEncoderConfig = TransformerEncoderConfig()
+
+    mask: Wav2VecMaskConfig = Wav2VecMaskConfig()
 
     dropout_input: float = 0.1
     dropout_features: float = 0.1
@@ -100,3 +105,17 @@ class Wav2VecEncoderModelConfig:
     target_glu: bool = False
 
     feature_grad_mult: float = 0.1
+
+
+@dataclass
+class Wav2VecDecoderMaskConfig(Wav2VecMaskConfig):
+    apply_mask: bool = True
+    mask_channel_prob: float = 0.5
+    mask_channel_length: int = 64
+
+
+@dataclass
+class Wav2VecDecoderConfig:
+    final_dropout: float = 0.0
+    vocabulary: Optional[List] = None
+    mask: Wav2VecDecoderMaskConfig = Wav2VecDecoderMaskConfig()

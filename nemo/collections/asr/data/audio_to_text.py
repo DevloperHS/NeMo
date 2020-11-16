@@ -79,45 +79,11 @@ def _speech_collate_fn(batch, pad_id):
     return audio_signal, audio_lengths, tokens, tokens_lengths
 
 
-def _padding_collate_fn(batch, pad_id, max_sample_size):
-    """collate batch of audio sig, audio len, tokens, tokens len
-    Args:
-        batch (Optional[FloatTensor], Optional[LongTensor], LongTensor,
-               LongTensor):  A tuple of tuples of signal, signal lengths,
-               encoded tokens, and encoded tokens length.  This collate func
-               assumes the signals are 1d torch tensors (i.e. mono audio).
-    """
-    _, audio_lengths, _, tokens_lengths = zip(*batch)
-    max_audio_len = 0
-    has_audio = audio_lengths[0] is not None
-    if has_audio:
-        max_audio_len = max(audio_lengths).item()
-        if max_sample_size > 0:
-            max_audio_len = min(max_audio_len, max_sample_size)
-    max_tokens_len = max(tokens_lengths).item()
-
-    audio_signal, tokens = [], []
-    for sig, sig_len, tokens_i, tokens_i_len in batch:
-        if has_audio:
-            sig_len = sig_len.item()
-            if sig_len < max_audio_len:
-                pad = (0, max_audio_len - sig_len)
-                sig = torch.nn.functional.pad(sig, pad)
-            if sig_len > max_audio_len:
-                sig = crop_to_max_size(wav=sig, target_size=max_audio_len)
-            audio_signal.append(sig)
-        tokens_i_len = tokens_i_len.item()
-        if tokens_i_len < max_tokens_len:
-            pad = (0, max_tokens_len - tokens_i_len)
-            tokens_i = torch.nn.functional.pad(tokens_i, pad, value=pad_id)
-        tokens.append(tokens_i)
-
-    audio_signal = torch.stack(audio_signal)
-    audio_lengths = torch.stack(audio_lengths)
-    tokens = torch.stack(tokens)
-    tokens_lengths = torch.stack(tokens_lengths)
+def _padding_collate_fn(batch, pad_id):
+    audio_signal, audio_lengths, tokens, tokens_lengths = _speech_collate_fn(batch, pad_id)
 
     padding_mask = torch.full(size=audio_signal.size(), fill_value=True, dtype=torch.bool)
+
     for x, length in enumerate(audio_lengths):
         padding_mask[x][:length] = False
     return audio_signal, audio_lengths, tokens, tokens_lengths, padding_mask
@@ -181,23 +147,22 @@ class _AudioTextDataset(Dataset):
         return output
 
     def __init__(
-        self,
-        manifest_filepath: str,
-        parser: Union[str, Callable],
-        sample_rate: int,
-        int_values: bool = False,
-        augmentor: 'nemo.collections.asr.parts.perturb.AudioAugmentor' = None,
-        max_duration: Optional[int] = None,
-        min_duration: Optional[int] = None,
-        max_utts: int = 0,
-        trim: bool = False,
-        bos_id: Optional[int] = None,
-        eos_id: Optional[int] = None,
-        pad_id: int = 0,
-        load_audio: bool = True,
-        add_misc: bool = False,
-        return_pad_mask: bool = False,
-        max_sample_size: int = 0,
+            self,
+            manifest_filepath: str,
+            parser: Union[str, Callable],
+            sample_rate: int,
+            int_values: bool = False,
+            augmentor: 'nemo.collections.asr.parts.perturb.AudioAugmentor' = None,
+            max_duration: Optional[int] = None,
+            min_duration: Optional[int] = None,
+            max_utts: int = 0,
+            trim: bool = False,
+            bos_id: Optional[int] = None,
+            eos_id: Optional[int] = None,
+            pad_id: int = 0,
+            load_audio: bool = True,
+            add_misc: bool = False,
+            return_pad_mask: bool = False,
     ):
         self.parser = parser
 
@@ -215,7 +180,6 @@ class _AudioTextDataset(Dataset):
         self.bos_id = bos_id
         self.pad_id = pad_id
         self.return_pad_mask = return_pad_mask
-        self.max_sample_size = max_sample_size
         self.load_audio = load_audio
         self._add_misc = add_misc
 
@@ -258,7 +222,7 @@ class _AudioTextDataset(Dataset):
 
     def _collate_fn(self, batch):
         if self.return_pad_mask:
-            return _padding_collate_fn(batch, pad_id=self.pad_id, max_sample_size=self.max_sample_size)
+            return _padding_collate_fn(batch, pad_id=self.pad_id)
         else:
             return _speech_collate_fn(batch, pad_id=self.pad_id)
 
@@ -316,27 +280,26 @@ class AudioToCharDataset(_AudioTextDataset):
         return output
 
     def __init__(
-        self,
-        manifest_filepath: str,
-        labels: Union[str, List[str]],
-        sample_rate: int,
-        int_values: bool = False,
-        augmentor: 'nemo.collections.asr.parts.perturb.AudioAugmentor' = None,
-        max_duration: Optional[float] = None,
-        min_duration: Optional[float] = None,
-        max_utts: int = 0,
-        blank_index: int = -1,
-        unk_index: int = -1,
-        normalize: bool = True,
-        trim: bool = False,
-        bos_id: Optional[int] = None,
-        eos_id: Optional[int] = None,
-        pad_id: int = 0,
-        load_audio: bool = True,
-        parser: Union[str, Callable] = 'en',
-        add_misc: bool = False,
-        return_pad_mask: bool = False,
-        max_sample_size: int = 0,
+            self,
+            manifest_filepath: str,
+            labels: Union[str, List[str]],
+            sample_rate: int,
+            int_values: bool = False,
+            augmentor: 'nemo.collections.asr.parts.perturb.AudioAugmentor' = None,
+            max_duration: Optional[float] = None,
+            min_duration: Optional[float] = None,
+            max_utts: int = 0,
+            blank_index: int = -1,
+            unk_index: int = -1,
+            normalize: bool = True,
+            trim: bool = False,
+            bos_id: Optional[int] = None,
+            eos_id: Optional[int] = None,
+            pad_id: int = 0,
+            load_audio: bool = True,
+            parser: Union[str, Callable] = 'en',
+            add_misc: bool = False,
+            return_pad_mask: bool = False,
     ):
         self.labels = labels
 
@@ -360,7 +323,6 @@ class AudioToCharDataset(_AudioTextDataset):
             load_audio=load_audio,
             add_misc=add_misc,
             return_pad_mask=return_pad_mask,
-            max_sample_size=max_sample_size,
         )
 
 
@@ -490,7 +452,7 @@ class AudioToCharWithDursDataset(AudioToCharDataset):
 
         text = [
             self._interleave(
-                x=torch.empty(len(t) + 1, dtype=torch.long, device=t.device,).fill_(self.vocab.blank), y=t,
+                x=torch.empty(len(t) + 1, dtype=torch.long, device=t.device, ).fill_(self.vocab.blank), y=t,
             )
             for t in text
         ]
@@ -538,21 +500,20 @@ class AudioToBPEDataset(_AudioTextDataset):
         return output
 
     def __init__(
-        self,
-        manifest_filepath: str,
-        tokenizer: 'nemo.collections.common.tokenizers.TokenizerSpec',
-        sample_rate: int,
-        int_values: bool = False,
-        augmentor: 'nemo.collections.asr.parts.perturb.AudioAugmentor' = None,
-        max_duration: Optional[int] = None,
-        min_duration: Optional[int] = None,
-        max_utts: int = 0,
-        trim: bool = False,
-        load_audio: bool = True,
-        add_misc: bool = False,
-        use_start_end_token: bool = True,
-        return_pad_mask: bool = False,
-        max_sample_size: int = 0,
+            self,
+            manifest_filepath: str,
+            tokenizer: 'nemo.collections.common.tokenizers.TokenizerSpec',
+            sample_rate: int,
+            int_values: bool = False,
+            augmentor: 'nemo.collections.asr.parts.perturb.AudioAugmentor' = None,
+            max_duration: Optional[int] = None,
+            min_duration: Optional[int] = None,
+            max_utts: int = 0,
+            trim: bool = False,
+            load_audio: bool = True,
+            add_misc: bool = False,
+            use_start_end_token: bool = True,
+            return_pad_mask: bool = False,
     ):
         if use_start_end_token and hasattr(tokenizer, 'bos_token'):
             bos_id = tokenizer.bos_id
@@ -593,7 +554,6 @@ class AudioToBPEDataset(_AudioTextDataset):
             load_audio=load_audio,
             add_misc=add_misc,
             return_pad_mask=return_pad_mask,
-            max_sample_size=max_sample_size,
         )
 
 
@@ -624,14 +584,14 @@ class AudioLabelDataset(Dataset):
     """
 
     def __init__(
-        self,
-        manifest_filepath,
-        featurizer,
-        labels=None,
-        max_duration=None,
-        min_duration=None,
-        trim=False,
-        load_audio=True,
+            self,
+            manifest_filepath,
+            featurizer,
+            labels=None,
+            max_duration=None,
+            min_duration=None,
+            trim=False,
+            load_audio=True,
     ):
         self.collection = collections.ASRSpeechLabel(
             manifests_files=manifest_filepath.split(','), min_duration=min_duration, max_duration=max_duration
@@ -760,26 +720,25 @@ class _TarredAudioToTextDataset(IterableDataset):
     """
 
     def __init__(
-        self,
-        audio_tar_filepaths: Union[str, List[str]],
-        manifest_filepath: str,
-        parser: Callable,
-        sample_rate: int,
-        int_values: bool = False,
-        augmentor: Optional['nemo.collections.asr.parts.perturb.AudioAugmentor'] = None,
-        shuffle_n: int = 0,
-        min_duration: Optional[float] = None,
-        max_duration: Optional[float] = None,
-        max_utts: int = 0,
-        trim: bool = False,
-        bos_id: Optional[int] = None,
-        eos_id: Optional[int] = None,
-        add_misc: bool = False,
-        pad_id: int = 0,
-        global_rank: int = 0,
-        world_size: int = 0,
-        return_pad_mask: bool = False,
-        max_sample_size: int = 0,
+            self,
+            audio_tar_filepaths: Union[str, List[str]],
+            manifest_filepath: str,
+            parser: Callable,
+            sample_rate: int,
+            int_values: bool = False,
+            augmentor: Optional['nemo.collections.asr.parts.perturb.AudioAugmentor'] = None,
+            shuffle_n: int = 0,
+            min_duration: Optional[float] = None,
+            max_duration: Optional[float] = None,
+            max_utts: int = 0,
+            trim: bool = False,
+            bos_id: Optional[int] = None,
+            eos_id: Optional[int] = None,
+            add_misc: bool = False,
+            pad_id: int = 0,
+            global_rank: int = 0,
+            world_size: int = 0,
+            return_pad_mask: bool = False,
     ):
         self.collection = collections.ASRAudioText(
             manifests_files=manifest_filepath.split(','),
@@ -796,7 +755,6 @@ class _TarredAudioToTextDataset(IterableDataset):
         self.bos_id = bos_id
         self.pad_id = pad_id
         self.return_pad_mask = return_pad_mask
-        self.max_sample_size = max_sample_size
         self._add_misc = add_misc
 
         if isinstance(audio_tar_filepaths, str):
@@ -834,11 +792,11 @@ class _TarredAudioToTextDataset(IterableDataset):
         # Put together WebDataset
         self._dataset = (
             wd.Dataset(audio_tar_filepaths)
-            .shuffle(shuffle_n)
-            .rename(audio='wav', key='__key__')
-            .to_tuple('audio', 'key')
-            .pipe(self._filter)
-            .map(f=self._build_sample)
+                .shuffle(shuffle_n)
+                .rename(audio='wav', key='__key__')
+                .to_tuple('audio', 'key')
+                .pipe(self._filter)
+                .map(f=self._build_sample)
         )
 
     def _filter(self, iterator):
@@ -868,7 +826,7 @@ class _TarredAudioToTextDataset(IterableDataset):
 
     def _collate_fn(self, batch):
         if self.return_pad_mask:
-            return _padding_collate_fn(batch, self.pad_id, self.max_sample_size)
+            return _padding_collate_fn(batch, self.pad_id)
         else:
             return _speech_collate_fn(batch, self.pad_id)
 
@@ -991,30 +949,29 @@ class TarredAudioToCharDataset(_TarredAudioToTextDataset):
     """
 
     def __init__(
-        self,
-        audio_tar_filepaths: Union[str, List[str]],
-        manifest_filepath: str,
-        labels: List[str],
-        sample_rate: int,
-        int_values: bool = False,
-        augmentor: Optional['nemo.collections.asr.parts.perturb.AudioAugmentor'] = None,
-        shuffle_n: int = 0,
-        min_duration: Optional[float] = None,
-        max_duration: Optional[float] = None,
-        max_utts: int = 0,
-        blank_index: int = -1,
-        unk_index: int = -1,
-        normalize: bool = True,
-        trim: bool = False,
-        bos_id: Optional[int] = None,
-        eos_id: Optional[int] = None,
-        parser: Optional[str] = 'en',
-        add_misc: bool = False,
-        pad_id: int = 0,
-        global_rank: int = 0,
-        world_size: int = 0,
-        return_pad_mask: bool = False,
-        max_sample_size: int = 0,
+            self,
+            audio_tar_filepaths: Union[str, List[str]],
+            manifest_filepath: str,
+            labels: List[str],
+            sample_rate: int,
+            int_values: bool = False,
+            augmentor: Optional['nemo.collections.asr.parts.perturb.AudioAugmentor'] = None,
+            shuffle_n: int = 0,
+            min_duration: Optional[float] = None,
+            max_duration: Optional[float] = None,
+            max_utts: int = 0,
+            blank_index: int = -1,
+            unk_index: int = -1,
+            normalize: bool = True,
+            trim: bool = False,
+            bos_id: Optional[int] = None,
+            eos_id: Optional[int] = None,
+            parser: Optional[str] = 'en',
+            add_misc: bool = False,
+            pad_id: int = 0,
+            global_rank: int = 0,
+            world_size: int = 0,
+            return_pad_mask: bool = False,
     ):
         self.labels = labels
 
@@ -1039,7 +996,6 @@ class TarredAudioToCharDataset(_TarredAudioToTextDataset):
             add_misc=add_misc,
             pad_id=pad_id,
             return_pad_mask=return_pad_mask,
-            max_sample_size=max_sample_size,
             global_rank=global_rank,
             world_size=world_size,
         )
@@ -1106,24 +1062,23 @@ class TarredAudioToBPEDataset(_TarredAudioToTextDataset):
     """
 
     def __init__(
-        self,
-        audio_tar_filepaths: Union[str, List[str]],
-        manifest_filepath: str,
-        tokenizer: 'nemo.collections.common.tokenizers.TokenizerSpec',
-        sample_rate: int,
-        int_values: bool = False,
-        augmentor: Optional['nemo.collections.asr.parts.perturb.AudioAugmentor'] = None,
-        shuffle_n: int = 0,
-        min_duration: Optional[float] = None,
-        max_duration: Optional[float] = None,
-        max_utts: int = 0,
-        trim: bool = False,
-        add_misc: bool = False,
-        global_rank: int = 0,
-        world_size: int = 0,
-        use_start_end_token: bool = True,
-        return_pad_mask: bool = False,
-        max_sample_size: int = 0,
+            self,
+            audio_tar_filepaths: Union[str, List[str]],
+            manifest_filepath: str,
+            tokenizer: 'nemo.collections.common.tokenizers.TokenizerSpec',
+            sample_rate: int,
+            int_values: bool = False,
+            augmentor: Optional['nemo.collections.asr.parts.perturb.AudioAugmentor'] = None,
+            shuffle_n: int = 0,
+            min_duration: Optional[float] = None,
+            max_duration: Optional[float] = None,
+            max_utts: int = 0,
+            trim: bool = False,
+            add_misc: bool = False,
+            global_rank: int = 0,
+            world_size: int = 0,
+            use_start_end_token: bool = True,
+            return_pad_mask: bool = False,
     ):
         if use_start_end_token and hasattr(tokenizer, 'bos_token'):
             bos_id = tokenizer.bos_id
@@ -1165,7 +1120,6 @@ class TarredAudioToBPEDataset(_TarredAudioToTextDataset):
             add_misc=add_misc,
             pad_id=pad_id,
             return_pad_mask=return_pad_mask,
-            max_sample_size=max_sample_size,
             global_rank=global_rank,
             world_size=world_size,
         )

@@ -51,12 +51,14 @@ class Wav2VecEncoderModel(ModelPT):
         # Get global rank and total number of GPU workers for IterableDataset partitioning, if applicable
         self.global_rank = 0
         self.world_size = 0
+        self.local_rank = 0
         if trainer is not None:
             self.global_rank = (trainer.node_rank * trainer.num_gpus) + trainer.local_rank
             self.world_size = trainer.num_nodes * trainer.num_gpus
+            self.local_rank = trainer.local_rank
+
         super().__init__(cfg=cfg, trainer=trainer)
 
-        # Ensure passed cfg is compliant with ExpManagerConfig
         schema = OmegaConf.structured(Wav2VecEncoderModelConfig)
         cfg = cfg.get('params', {})
         if isinstance(cfg, dict):
@@ -83,19 +85,7 @@ class Wav2VecEncoderModel(ModelPT):
             else None
         )
 
-        self.mask_prob = cfg.mask_prob
-        self.mask_selection = cfg.mask_selection
-        self.mask_other = cfg.mask_other
-        self.mask_length = cfg.mask_length
-        self.no_mask_overlap = cfg.no_mask_overlap
-        self.mask_min_space = cfg.mask_min_space
-
-        self.mask_channel_prob = cfg.mask_channel_prob
-        self.mask_channel_selection = cfg.mask_channel_selection
-        self.mask_channel_other = cfg.mask_channel_other
-        self.mask_channel_length = cfg.mask_channel_length
-        self.no_mask_channel_overlap = cfg.no_mask_channel_overlap
-        self.mask_channel_min_space = cfg.mask_channel_min_space
+        self.mask_cfg = cfg.mask
 
         self.dropout_input = nn.Dropout(cfg.dropout_input)
         self.dropout_features = nn.Dropout(cfg.dropout_features)
@@ -169,7 +159,7 @@ class Wav2VecEncoderModel(ModelPT):
         # Instantiate tarred dataset loader or normal dataset loader
         if config.get('is_tarred', False):
             if ('tarred_audio_filepaths' in config and config['tarred_audio_filepaths'] is None) or (
-                'manifest_filepath' in config and config['manifest_filepath'] is None
+                    'manifest_filepath' in config and config['manifest_filepath'] is None
             ):
                 logging.warning(
                     "Could not load dataset as `manifest_filepath` was None or "
@@ -193,7 +183,6 @@ class Wav2VecEncoderModel(ModelPT):
                 global_rank=self.global_rank,
                 world_size=self.world_size,
                 return_pad_mask=True,
-                max_sample_size=config.get('max_sample_size', 0),
             )
             shuffle = False
         else:
@@ -211,16 +200,16 @@ class Wav2VecEncoderModel(ModelPT):
                 min_duration=config.get('min_duration', None),
                 max_utts=config.get('max_utts', 0),
                 return_pad_mask=True,
-                max_sample_size=config.get('max_sample_size', 0),
             )
 
         return torch.utils.data.DataLoader(
             dataset=dataset,
             batch_size=config['batch_size'],
-            collate_fn=dataset._collate_fn,
+            collate_fn=dataset.collate_fn,
             drop_last=config.get('drop_last', False),
             shuffle=shuffle,
             num_workers=config.get('num_workers', 0),
+            pin_memory=config.get('pin_memory', False),
         )
 
     def setup_training_data(self, train_data_config: DictConfig):
@@ -232,19 +221,18 @@ class Wav2VecEncoderModel(ModelPT):
     def setup_test_data(self, test_data_config: DictConfig):
         self._test_dl = self.setup_dataloader(test_data_config)
 
-    def training_step(self, batch, batch_ix):
+    def training_step(self, batch, batch_idx):
         loss, sample_size, logging_output = self.loss(model=self, sample=batch)
-        self.log('train_loss', loss)
         self.log('learning_rate', self._optimizer.param_groups[0]['lr'])
         return {'loss': loss}
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
         loss, sample_size, logging_output = self.loss(model=self, sample=batch)
-        self.log('val_loss', loss, prog_bar=True, on_epoch=True)
+        self.log('val_loss', loss, prog_bar=True, on_epoch=True, sync_dist=True)
 
     def test_step(self, batch, batch_idx, dataloader_idx=0):
         loss, sample_size, logging_output = self.loss(model=self, sample=batch)
-        self.log('test_loss', loss, prog_bar=True, on_epoch=True)
+        self.log('test_loss', loss, prog_bar=True, on_epoch=True, sync_dist=True)
 
     @classmethod
     def list_available_models(cls) -> Optional[PretrainedModelInfo]:
@@ -252,17 +240,17 @@ class Wav2VecEncoderModel(ModelPT):
 
     def apply_mask(self, x, padding_mask):
         B, T, C = x.shape
-        if self.mask_prob > 0:
+        if self.mask.mask_prob > 0:
             mask_indices = compute_mask_indices(
                 (B, T),
                 padding_mask,
-                self.mask_prob,
-                self.mask_length,
-                self.mask_selection,
-                self.mask_other,
+                self.mask.mask_prob,
+                self.mask.mask_length,
+                self.mask.mask_selection,
+                self.mask.mask_other,
                 min_masks=2,
-                no_overlap=self.no_mask_overlap,
-                min_space=self.mask_min_space,
+                no_overlap=self.mask.no_mask_overlap,
+                min_space=self.mask.mask_min_space,
             )
             mask_indices = torch.from_numpy(mask_indices).to(x.device)
             mask_emb = self.mask_emb.type_as(x)
@@ -270,16 +258,16 @@ class Wav2VecEncoderModel(ModelPT):
         else:
             mask_indices = None
 
-        if self.mask_channel_prob > 0:
+        if self.mask.mask_channel_prob > 0:
             mask_channel_indices = compute_mask_indices(
                 (B, C),
                 None,
-                self.mask_channel_prob,
-                self.mask_channel_length,
-                self.mask_channel_selection,
-                self.mask_channel_other,
-                no_overlap=self.no_mask_channel_overlap,
-                min_space=self.mask_channel_min_space,
+                self.mask.mask_channel_prob,
+                self.mask.mask_channel_length,
+                self.mask.mask_channel_selection,
+                self.mask.mask_channel_other,
+                no_overlap=self.mask.no_mask_channel_overlap,
+                min_space=self.mask.mask_channel_min_space,
             )
             mask_channel_indices = torch.from_numpy(mask_channel_indices).to(x.device).unsqueeze(1).expand(-1, T, -1)
             x[mask_channel_indices] = 0
@@ -360,9 +348,13 @@ class Wav2VecEncoderModel(ModelPT):
         unmasked_features = features.clone()
 
         if padding_mask is not None:
+            # both BxTxC, 20x100x1, 20x50x1
             extra = padding_mask.size(1) % features.size(1)
             if extra > 0:
                 padding_mask = padding_mask[:, :-extra]
+            # both BxTxC
+            # No additional extra padding
+            # view Batch,
             padding_mask = padding_mask.view(padding_mask.size(0), features.size(1), -1)
             padding_mask = padding_mask.all(-1)
 
@@ -498,31 +490,31 @@ class TransposeLast(nn.Module):
 
 class ConvFeatureExtractionModel(nn.Module):
     def __init__(
-        self,
-        conv_layers: List[Tuple[int, int, int]],
-        dropout: float = 0.0,
-        mode: str = "default",
-        conv_bias: bool = False,
+            self,
+            conv_layers: List[Tuple[int, int, int]],
+            dropout: float = 0.0,
+            mode: str = "default",
+            conv_bias: bool = False,
     ):
         super().__init__()
 
         assert mode in {"default", "layer_norm"}
 
         def block(
-            n_in, n_out, k, stride, is_layer_norm=False, is_group_norm=False, conv_bias=False,
+                n_in, n_out, k, stride, is_layer_norm=False, is_group_norm=False, conv_bias=False,
         ):
             def make_conv():
                 conv = nn.Conv1d(n_in, n_out, k, stride=stride, bias=conv_bias)
                 nn.init.kaiming_normal_(conv.weight)
                 return conv
 
-            assert (is_layer_norm and is_group_norm) == False, "layer norm and group norm are exclusive"
+            assert (is_layer_norm and is_group_norm) is False, "layer norm and group norm are exclusive"
 
             if is_layer_norm:
                 return nn.Sequential(
                     make_conv(),
                     nn.Dropout(p=dropout),
-                    nn.Sequential(TransposeLast(), Fp32LayerNorm(dim, elementwise_affine=True), TransposeLast(),),
+                    nn.Sequential(TransposeLast(), Fp32LayerNorm(dim, elementwise_affine=True), TransposeLast(), ),
                     nn.GELU(),
                 )
             elif is_group_norm:
@@ -650,7 +642,7 @@ class TransformerSentenceEncoderLayer(nn.Module):
     """
 
     def __init__(
-        self, cfg: TransformerSentenceEncoderConfig, embedding_dim: float = 768, dropout: float = 0.1,
+            self, cfg: TransformerSentenceEncoderConfig, embedding_dim: float = 768, dropout: float = 0.1,
     ) -> None:
 
         super().__init__()
@@ -680,11 +672,11 @@ class TransformerSentenceEncoderLayer(nn.Module):
         self.final_layer_norm = nn.LayerNorm(self.embedding_dim)
 
     def forward(
-        self,
-        x: torch.Tensor,
-        self_attn_mask: torch.Tensor = None,
-        self_attn_padding_mask: torch.Tensor = None,
-        need_weights: bool = False,
+            self,
+            x: torch.Tensor,
+            self_attn_mask: torch.Tensor = None,
+            self_attn_padding_mask: torch.Tensor = None,
+            need_weights: bool = False,
     ):
         """
         LayerNorm is applied either before or after the self-attention/ffn

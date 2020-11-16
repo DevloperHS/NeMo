@@ -5,15 +5,15 @@ import torch
 
 
 def compute_mask_indices(
-    shape: Tuple[int, int],
-    padding_mask: Optional[torch.Tensor],
-    mask_prob: float,
-    mask_length: int,
-    mask_type: str = "static",
-    mask_other: float = 0.0,
-    min_masks: int = 0,
-    no_overlap: bool = False,
-    min_space: int = 0,
+        shape: Tuple[int, int],
+        padding_mask: Optional[torch.Tensor],
+        mask_prob: float,
+        mask_length: int,
+        mask_type: str = "static",
+        mask_other: float = 0.0,
+        min_masks: int = 0,
+        no_overlap: bool = False,
+        min_space: int = 0,
 ) -> np.ndarray:
     """
     Computes random mask spans for a given shape
@@ -119,3 +119,15 @@ def compute_mask_indices(
         mask[i, mask_idc] = True
 
     return mask
+
+
+def make_positions(tensor, padding_idx: int, onnx_trace: bool = False):
+    """Replace non-padding symbols with their position numbers.
+    Position numbers begin at padding_idx+1. Padding symbols are ignored.
+    """
+    # The series of casts and type-conversions here are carefully
+    # balanced to both work with ONNX export and XLA. In particular XLA
+    # prefers ints, cumsum defaults to output longs, and ONNX doesn't know
+    # how to handle the dtype kwarg in cumsum.
+    mask = tensor.ne(padding_idx).int()
+    return (torch.cumsum(mask, dim=1).type_as(mask) * mask).long() + padding_idx
