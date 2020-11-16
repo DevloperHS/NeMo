@@ -103,7 +103,7 @@ class Wav2VecEncoderModel(ModelPT):
         self.logit_temp = cfg.logit_temp
 
         final_dim = cfg.final_dim if cfg.final_dim > 0 else encoder_embed_dim
-
+        self.final_dim = final_dim
         if cfg.quantize.quantize_targets:
             vq_dim = cfg.quantize.latent_dim if cfg.quantize.latent_dim > 0 else final_dim
             self.quantizer = GumbelVectorQuantizer(
@@ -348,13 +348,9 @@ class Wav2VecEncoderModel(ModelPT):
         unmasked_features = features.clone()
 
         if padding_mask is not None:
-            # both BxTxC, 20x100x1, 20x50x1
             extra = padding_mask.size(1) % features.size(1)
             if extra > 0:
                 padding_mask = padding_mask[:, :-extra]
-            # both BxTxC
-            # No additional extra padding
-            # view Batch,
             padding_mask = padding_mask.view(padding_mask.size(0), features.size(1), -1)
             padding_mask = padding_mask.all(-1)
 
@@ -475,6 +471,12 @@ class Wav2VecEncoderModel(ModelPT):
             pen.append(net_output["features_pen"])
 
         return pen
+
+    def remove_pretraining_modules(self):
+        self.quantizer = None
+        self.project_q = None
+        self.target_glu = None
+        self.final_proj = None
 
 
 class TransposeLast(nn.Module):

@@ -13,23 +13,24 @@ from nemo.collections.asr.models import ASRModel
 from nemo.collections.asr.models.wav2vec.modules.config import Wav2VecCTCEncoderConfig
 from nemo.collections.asr.models.wav2vec.wav2vec_model import Wav2VecEncoderModel
 from nemo.collections.asr.parts.perturb import process_augmentations
-from nemo.core.classes.common import typecheck
+from nemo.core.classes.common import typecheck, PretrainedModelInfo
 
 
 class Wav2VecCTCEncoder(nn.Module):
     def __init__(self, wav2vec_encoder: Wav2VecEncoderModel, cfg: Wav2VecCTCEncoderConfig, encoder_dim):
         super().__init__()
 
-        if cfg.mask.apply_mask:
-            # Override encoder mask cfg with decoder mask cfg
-            self.encoder.mask_cfg = cfg.mask
-
         self.final_dropout = nn.Dropout(cfg.final_dropout)
         # Add 1 for blank char
-        vocab = cfg.vocabulary
-        self._num_classes = len(vocab) + 1
+        self.vocabulary = cfg.vocabulary
+        self._num_classes = len(self.vocabulary) + 1
         self.apply_mask = cfg.mask.apply_mask
         self.wav2vec_encoder = wav2vec_encoder
+
+        if self.apply_mask:
+            # Override encoder mask cfg with ctc encoder mask cfg
+            self.wav2vec_encoder.mask_cfg = cfg.mask
+        self.wav2vec_encoder.remove_pretraining_modules()
 
         self.proj = self.linear(encoder_dim, self._num_classes)
 
@@ -53,9 +54,14 @@ class Wav2VecCTCEncoder(nn.Module):
 
         if self.proj:
             x = self.proj(x)
-
-        output_lengths = padding_mask.long().sum(-1)
+        x = x.log_softmax(-1)
+        non_padding_mask = ~padding_mask
+        output_lengths = non_padding_mask.long().sum(-1)
         return x, output_lengths
+
+    @property
+    def num_classes_with_blank(self):
+        return self._num_classes
 
 
 class Wav2VecASRModel(ASRModel):
@@ -87,18 +93,18 @@ class Wav2VecASRModel(ASRModel):
         self.encoder = Wav2VecCTCEncoder(
             wav2vec_encoder=encoder,
             cfg=cfg,
-            encoder_dim=encoder.encoder_embed_dim
+            encoder_dim=encoder.final_dim
         )
 
         self.loss = CTCLoss(
-            num_classes=self.decoder.num_classes_with_blank - 1,
+            num_classes=self.encoder.num_classes_with_blank - 1,
             zero_infinity=True,
             reduction=self._cfg.get("ctc_reduction", "mean_batch"),
         )
 
         # Setup metric objects
         self._wer = WER(
-            vocabulary=self.decoder.vocabulary,
+            vocabulary=self.encoder.vocabulary,
             batch_dim_index=0,
             use_cer=self._cfg.get('use_cer', False),
             ctc_decode=True,
@@ -182,6 +188,10 @@ class Wav2VecASRModel(ASRModel):
             pin_memory=config.get('pin_memory', False),
         )
 
+    @classmethod
+    def list_available_models(cls) -> Optional[PretrainedModelInfo]:
+        return None
+
     def setup_training_data(self, train_data_config: DictConfig):
         self._train_dl = self.setup_dataloader(train_data_config)
 
@@ -213,8 +223,6 @@ class Wav2VecASRModel(ASRModel):
     def training_step(self, batch, batch_idx):
         loss_value, predictions, transcript, transcript_len = self.model_forward_and_loss(batch)
 
-        tensorboard_logs = {'train_loss': loss_value, 'learning_rate': self._optimizer.param_groups[0]['lr']}
-
         if hasattr(self, '_trainer') and self._trainer is not None:
             log_every_n_steps = self._trainer.log_every_n_steps
         else:
@@ -223,27 +231,28 @@ class Wav2VecASRModel(ASRModel):
         if (batch_idx + 1) % log_every_n_steps == 0:
             self._wer.update(predictions, transcript, transcript_len)
             wer, _, _ = self._wer.compute()
-            tensorboard_logs.update({'training_batch_wer': wer})
-
-        return {'loss': loss_value, 'log': tensorboard_logs}
+            self.log('training_batch_wer', wer, prog_bar=True)
+        self.log('learning_rate', self._optimizer.param_groups[0]['lr'])
+        return {'loss': loss_value}
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
         loss_value, predictions, transcript, transcript_len = self.model_forward_and_loss(batch)
         self._wer.update(predictions, transcript, transcript_len)
         wer, wer_num, wer_denom = self._wer.compute()
-        return {
+        self.log_dict({
             'val_loss': loss_value,
             'val_wer_num': wer_num,
             'val_wer_denom': wer_denom,
             'val_wer': wer,
-        }
+        }, sync_dist=True, prog_bar=True, on_epoch=True)
 
     def test_step(self, batch, batch_idx, dataloader_idx=0):
-        logs = self.validation_step(batch, batch_idx, dataloader_idx=dataloader_idx)
-        test_logs = {
-            'test_loss': logs['val_loss'],
-            'test_wer_num': logs['val_wer_num'],
-            'test_wer_denom': logs['val_wer_denom'],
-            'test_wer': logs['val_wer'],
-        }
-        return test_logs
+        loss_value, predictions, transcript, transcript_len = self.model_forward_and_loss(batch)
+        self._wer.update(predictions, transcript, transcript_len)
+        wer, wer_num, wer_denom = self._wer.compute()
+        self.log_dict({
+            'test_loss': loss_value,
+            'test_wer_num': wer_num,
+            'test_wer_denom': wer_denom,
+            'test_wer': wer,
+        }, sync_dist=True, prog_bar=True, on_epoch=True)
