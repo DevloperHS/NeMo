@@ -1,5 +1,5 @@
 import logging
-from typing import Optional, Dict, cast
+from typing import Optional, Dict, cast, Union, List
 
 import torch
 from omegaconf import DictConfig, OmegaConf
@@ -10,14 +10,14 @@ from nemo.collections.asr.data.audio_to_text import AudioToCharDataset, TarredAu
 from nemo.collections.asr.losses.ctc import CTCLoss
 from nemo.collections.asr.metrics.wer import WER
 from nemo.collections.asr.models import ASRModel
-from nemo.collections.asr.models.wav2vec.modules.config import Wav2VecDecoderConfig
+from nemo.collections.asr.models.wav2vec.modules.config import Wav2VecCTCEncoderConfig
 from nemo.collections.asr.models.wav2vec.wav2vec_model import Wav2VecEncoderModel
 from nemo.collections.asr.parts.perturb import process_augmentations
 from nemo.core.classes.common import typecheck
 
 
 class Wav2VecCTCEncoder(nn.Module):
-    def __init__(self, wav2vec_encoder: Wav2VecEncoderModel, cfg: Wav2VecDecoderConfig, encoder_dim):
+    def __init__(self, wav2vec_encoder: Wav2VecEncoderModel, cfg: Wav2VecCTCEncoderConfig, encoder_dim):
         super().__init__()
 
         if cfg.mask.apply_mask:
@@ -59,6 +59,9 @@ class Wav2VecCTCEncoder(nn.Module):
 
 
 class Wav2VecASRModel(ASRModel):
+    def transcribe(self, paths2audio_files: List[str], batch_size: int = 4) -> List[str]:
+        pass
+
     def __init__(self, encoder: Wav2VecEncoderModel, cfg: DictConfig, trainer: Trainer):
         # Get global rank and total number of GPU workers for IterableDataset partitioning, if applicable
         self.global_rank = 0
@@ -71,7 +74,7 @@ class Wav2VecASRModel(ASRModel):
 
         super().__init__(cfg, trainer)
 
-        schema = OmegaConf.structured(Wav2VecDecoderConfig)
+        schema = OmegaConf.structured(Wav2VecCTCEncoderConfig)
         cfg = cfg.get('params', {})
         if isinstance(cfg, dict):
             cfg = OmegaConf.create(cfg)
@@ -79,7 +82,7 @@ class Wav2VecASRModel(ASRModel):
             raise ValueError(f"cfg was type: {type(cfg)}. Expected either a dict or a DictConfig")
         cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
         cfg = OmegaConf.merge(schema, cfg)
-        cfg = cast(Wav2VecDecoderConfig, cfg)
+        cfg = cast(Wav2VecCTCEncoderConfig, cfg)
 
         self.encoder = Wav2VecCTCEncoder(
             wav2vec_encoder=encoder,
@@ -103,7 +106,7 @@ class Wav2VecASRModel(ASRModel):
             log_prediction=self._cfg.get("log_prediction", False),
         )
 
-    def _setup_dataloader_from_config(self, config: Optional[Dict]):
+    def setup_dataloader(self, config: DictConfig):
         if 'augmentor' in config:
             augmentor = process_augmentations(config['augmentor'])
         else:
@@ -178,6 +181,15 @@ class Wav2VecASRModel(ASRModel):
             num_workers=config.get('num_workers', 0),
             pin_memory=config.get('pin_memory', False),
         )
+
+    def setup_training_data(self, train_data_config: DictConfig):
+        self._train_dl = self.setup_dataloader(train_data_config)
+
+    def setup_validation_data(self, val_data_config: DictConfig):
+        self._validation_dl = self.setup_dataloader(val_data_config)
+
+    def setup_test_data(self, test_data_config: DictConfig):
+        self._test_dl = self.setup_dataloader(test_data_config)
 
     @typecheck()
     def forward(self, input_signal, padding_mask):

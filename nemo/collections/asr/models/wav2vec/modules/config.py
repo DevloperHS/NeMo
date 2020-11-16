@@ -115,7 +115,7 @@ class Wav2VecDecoderMaskConfig(Wav2VecMaskConfig):
 
 
 @dataclass
-class Wav2VecDecoderConfig:
+class Wav2VecCTCEncoderConfig:
     final_dropout: float = 0.0
     vocabulary: Optional[List] = None
     mask: Wav2VecDecoderMaskConfig = Wav2VecDecoderMaskConfig()
