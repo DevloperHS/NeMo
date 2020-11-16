@@ -67,14 +67,14 @@ class LossConfig:
 @dataclass
 class Wav2VecMaskConfig:
     mask_prob: float = 0.65
-    mask_selection: str = 'static'
+    mask_type: str = 'static'
     mask_other: int = 0
     mask_length: int = 10
     no_mask_overlap: bool = False
     mask_min_space: int = 1
 
     mask_channel_prob: float = 0
-    mask_channel_selection: str = 'static'
+    mask_channel_type: str = 'static'
     mask_channel_other: int = 0
     mask_channel_length: int = 10
     no_mask_channel_overlap: bool = False

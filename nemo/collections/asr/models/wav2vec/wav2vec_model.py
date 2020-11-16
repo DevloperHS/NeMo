@@ -240,17 +240,17 @@ class Wav2VecEncoderModel(ModelPT):
 
     def apply_mask(self, x, padding_mask):
         B, T, C = x.shape
-        if self.mask.mask_prob > 0:
+        if self.mask_cfg.mask_prob > 0:
             mask_indices = compute_mask_indices(
                 (B, T),
                 padding_mask,
-                self.mask.mask_prob,
-                self.mask.mask_length,
-                self.mask.mask_selection,
-                self.mask.mask_other,
+                self.mask_cfg.mask_prob,
+                self.mask_cfg.mask_length,
+                self.mask_cfg.mask_type,
+                self.mask_cfg.mask_other,
                 min_masks=2,
-                no_overlap=self.mask.no_mask_overlap,
-                min_space=self.mask.mask_min_space,
+                no_overlap=self.mask_cfg.no_mask_overlap,
+                min_space=self.mask_cfg.mask_min_space,
             )
             mask_indices = torch.from_numpy(mask_indices).to(x.device)
             mask_emb = self.mask_emb.type_as(x)
@@ -258,16 +258,16 @@ class Wav2VecEncoderModel(ModelPT):
         else:
             mask_indices = None
 
-        if self.mask.mask_channel_prob > 0:
+        if self.mask_cfg.mask_channel_prob > 0:
             mask_channel_indices = compute_mask_indices(
                 (B, C),
                 None,
-                self.mask.mask_channel_prob,
-                self.mask.mask_channel_length,
-                self.mask.mask_channel_selection,
-                self.mask.mask_channel_other,
-                no_overlap=self.mask.no_mask_channel_overlap,
-                min_space=self.mask.mask_channel_min_space,
+                self.mask_cfg.mask_channel_prob,
+                self.mask_cfg.mask_channel_length,
+                self.mask_cfg.mask_channel_type,
+                self.mask_cfg.mask_channel_other,
+                no_overlap=self.mask_cfg.no_mask_channel_overlap,
+                min_space=self.mask_cfg.mask_channel_min_space,
             )
             mask_channel_indices = torch.from_numpy(mask_channel_indices).to(x.device).unsqueeze(1).expand(-1, T, -1)
             x[mask_channel_indices] = 0
