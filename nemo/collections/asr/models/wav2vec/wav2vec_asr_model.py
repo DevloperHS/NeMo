@@ -1,5 +1,5 @@
 import logging
-from typing import Optional, Dict, cast, Union, List
+from typing import Optional, cast, List
 
 import torch
 from omegaconf import DictConfig, OmegaConf
@@ -51,10 +51,8 @@ class Wav2VecCTCEncoder(nn.Module):
             )
 
         x = self.final_dropout(x)
+        x = self.proj(x)
 
-        if self.proj:
-            x = self.proj(x)
-        x = x.log_softmax(-1)
         non_padding_mask = ~padding_mask
         output_lengths = non_padding_mask.long().sum(-1)
         return x, output_lengths
@@ -203,7 +201,8 @@ class Wav2VecASRModel(ASRModel):
 
     @typecheck()
     def forward(self, input_signal, padding_mask):
-        log_probs, encoded_len = self.encoder(audio_signal=input_signal, padding_mask=padding_mask)
+        x, encoded_len = self.encoder(audio_signal=input_signal, padding_mask=padding_mask)
+        log_probs = x.log_softmax(-1)
         greedy_predictions = log_probs.argmax(dim=-1, keepdim=False)
         return log_probs, encoded_len, greedy_predictions
 
@@ -214,14 +213,14 @@ class Wav2VecASRModel(ASRModel):
             padding_mask=padding_mask
         )
 
-        loss_value = self.loss(
+        loss = self.loss(
             log_probs=log_probs, targets=transcript, input_lengths=encoded_len, target_lengths=transcript_len
         )
-        return loss_value, predictions, transcript, transcript_len
+        return loss, predictions, transcript, transcript_len
 
     # PTL-specific methods
     def training_step(self, batch, batch_idx):
-        loss_value, predictions, transcript, transcript_len = self.model_forward_and_loss(batch)
+        loss, predictions, transcript, transcript_len = self.model_forward_and_loss(batch)
 
         if hasattr(self, '_trainer') and self._trainer is not None:
             log_every_n_steps = self._trainer.log_every_n_steps
@@ -233,26 +232,26 @@ class Wav2VecASRModel(ASRModel):
             wer, _, _ = self._wer.compute()
             self.log('training_batch_wer', wer, prog_bar=True)
         self.log('learning_rate', self._optimizer.param_groups[0]['lr'])
-        self.log('train_loss', loss_value)
-        return {'loss': loss_value}
+        self.log('train_loss', loss, sync_dist=True, prog_bar=True, on_epoch=True)
+        return {'loss': loss}
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
-        loss_value, predictions, transcript, transcript_len = self.model_forward_and_loss(batch)
+        loss, predictions, transcript, transcript_len = self.model_forward_and_loss(batch)
         self._wer.update(predictions, transcript, transcript_len)
         wer, wer_num, wer_denom = self._wer.compute()
         self.log_dict({
-            'val_loss': loss_value,
+            'val_loss': loss,
             'val_wer_num': wer_num,
             'val_wer_denom': wer_denom,
             'val_wer': wer,
         }, sync_dist=True, prog_bar=True, on_epoch=True)
 
     def test_step(self, batch, batch_idx, dataloader_idx=0):
-        loss_value, predictions, transcript, transcript_len = self.model_forward_and_loss(batch)
+        loss, predictions, transcript, transcript_len = self.model_forward_and_loss(batch)
         self._wer.update(predictions, transcript, transcript_len)
         wer, wer_num, wer_denom = self._wer.compute()
         self.log_dict({
-            'test_loss': loss_value,
+            'test_loss': loss,
             'test_wer_num': wer_num,
             'test_wer_denom': wer_denom,
             'test_wer': wer,
