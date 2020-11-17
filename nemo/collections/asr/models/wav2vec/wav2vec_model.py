@@ -224,7 +224,6 @@ class Wav2VecEncoderModel(ModelPT):
     def training_step(self, batch, batch_idx):
         loss, sample_size, logging_output = self.loss(model=self, sample=batch)
         self.log('learning_rate', self._optimizer.param_groups[0]['lr'])
-        self.log('train_loss', loss, sync_dist=True, prog_bar=True, on_epoch=True)
         return {'loss': loss}
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):

@@ -17,12 +17,17 @@ from nemo.core.classes.common import typecheck, PretrainedModelInfo
 
 
 class Wav2VecCTCEncoder(nn.Module):
-    def __init__(self, wav2vec_encoder: Wav2VecEncoderModel, cfg: Wav2VecCTCEncoderConfig, encoder_dim):
+    def __init__(self,
+                 wav2vec_encoder: Wav2VecEncoderModel,
+                 cfg: Wav2VecCTCEncoderConfig,
+                 encoder_dim: int,
+                 trainer: Trainer):
         super().__init__()
-
+        self.trainer = trainer
         self.final_dropout = nn.Dropout(cfg.final_dropout)
         # Add 1 for blank char
         self.vocabulary = cfg.vocabulary
+        self.freeze_encoder_after_steps = cfg.freeze_encoder_after_steps
         self._num_classes = len(self.vocabulary) + 1
         self.apply_mask = cfg.mask.apply_mask
         self.wav2vec_encoder = wav2vec_encoder
@@ -42,8 +47,17 @@ class Wav2VecCTCEncoder(nn.Module):
         return m
 
     def forward(self, audio_signal, padding_mask):
+        freeze_encoder_at_step = self.freeze_encoder_after_steps is not None and \
+                                 self.freeze_encoder_after_steps <= self.trainer.global_step
 
-        with torch.no_grad():
+        if freeze_encoder_at_step:
+            with torch.no_grad():
+                x, padding_mask = self.wav2vec_encoder.extract_features(
+                    source=audio_signal,
+                    padding_mask=padding_mask,
+                    mask=self.apply_mask and self.training
+                )
+        else:
             x, padding_mask = self.wav2vec_encoder.extract_features(
                 source=audio_signal,
                 padding_mask=padding_mask,
@@ -91,7 +105,8 @@ class Wav2VecASRModel(ASRModel):
         self.encoder = Wav2VecCTCEncoder(
             wav2vec_encoder=encoder,
             cfg=cfg,
-            encoder_dim=encoder.final_dim
+            encoder_dim=encoder.final_dim,
+            trainer=trainer
         )
 
         self.loss = CTCLoss(
@@ -191,12 +206,15 @@ class Wav2VecASRModel(ASRModel):
         return None
 
     def setup_training_data(self, train_data_config: DictConfig):
+        self._update_dataset_config(dataset_name='train', config=train_data_config)
         self._train_dl = self.setup_dataloader(train_data_config)
 
     def setup_validation_data(self, val_data_config: DictConfig):
+        self._update_dataset_config(dataset_name='validation', config=val_data_config)
         self._validation_dl = self.setup_dataloader(val_data_config)
 
     def setup_test_data(self, test_data_config: DictConfig):
+        self._update_dataset_config(dataset_name='test', config=test_data_config)
         self._test_dl = self.setup_dataloader(test_data_config)
 
     @typecheck()
@@ -232,7 +250,7 @@ class Wav2VecASRModel(ASRModel):
             wer, _, _ = self._wer.compute()
             self.log('training_batch_wer', wer, prog_bar=True)
         self.log('learning_rate', self._optimizer.param_groups[0]['lr'])
-        self.log('train_loss', loss, sync_dist=True, prog_bar=True, on_epoch=True)
+        self.log('loss', loss, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
         return {'loss': loss}
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
@@ -241,8 +259,6 @@ class Wav2VecASRModel(ASRModel):
         wer, wer_num, wer_denom = self._wer.compute()
         self.log_dict({
             'val_loss': loss,
-            'val_wer_num': wer_num,
-            'val_wer_denom': wer_denom,
             'val_wer': wer,
         }, sync_dist=True, prog_bar=True, on_epoch=True)
 
@@ -252,7 +268,5 @@ class Wav2VecASRModel(ASRModel):
         wer, wer_num, wer_denom = self._wer.compute()
         self.log_dict({
             'test_loss': loss,
-            'test_wer_num': wer_num,
-            'test_wer_denom': wer_denom,
             'test_wer': wer,
         }, sync_dist=True, prog_bar=True, on_epoch=True)

@@ -119,3 +119,4 @@ class Wav2VecCTCEncoderConfig:
     final_dropout: float = 0.0
     vocabulary: Optional[List] = None
     mask: Wav2VecDecoderMaskConfig = Wav2VecDecoderMaskConfig()
+    freeze_encoder_after_steps: Optional[int] = None
