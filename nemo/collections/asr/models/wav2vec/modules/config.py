@@ -21,7 +21,7 @@ class Wav2VecTransformerEncoderConfig:
     embedding_dim: int = 768
     ffn_embedding_dim: int = 3072
     num_attention_heads: int = 8
-    dropout: float = 0.0
+    dropout: float = 0.1
     activation_fn: Wav2VecActivationType = Wav2VecActivationType.relu
     layer_norm_first: bool = True
 

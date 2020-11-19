@@ -86,6 +86,9 @@ class Wav2VecEncoderModel(Wav2VecBase):
 
         self.mask_cfg = cfg.mask
 
+        self.dropout_input = nn.Dropout(cfg.dropout_input)
+        self.dropout_features = nn.Dropout(cfg.dropout_features)
+
         self.feature_grad_mult = cfg.feature_grad_mult
 
         self.quantizer = None
@@ -290,6 +293,9 @@ class Wav2VecEncoderModel(Wav2VecBase):
 
         if self.post_extract_proj is not None:
             features = self.post_extract_proj(features)
+
+        features = self.dropout_input(features)
+        unmasked_features = self.dropout_features(unmasked_features)
 
         if self.input_quantizer:
             features, prob_ppl, cur_codebook_temp = self.input_quantizer(features)
