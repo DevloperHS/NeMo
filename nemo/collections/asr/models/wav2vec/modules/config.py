@@ -2,8 +2,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Optional
 
-from torch import nn
-
 
 @dataclass
 class ConvConfig:
@@ -12,30 +10,27 @@ class ConvConfig:
 
 
 class Wav2VecActivationType(Enum):
-    relu = nn.ReLU
-    gelu = nn.GELU
-    tanh = nn.Tanh
+    relu = 'relu'
+    gelu = 'gelu'
 
 
 @dataclass
-class TransformerSentenceEncoderConfig:
+class Wav2VecTransformerEncoderConfig:
     encoder_layers: int = 12
     encoder_layerdrop: float = 0.05
     embedding_dim: int = 768
     ffn_embedding_dim: int = 3072
     num_attention_heads: int = 8
     dropout: float = 0.1
-    attention_dropout: float = 0.1
-    activation_dropout: float = 0.1
     activation_fn: Wav2VecActivationType = Wav2VecActivationType.relu
     layer_norm_first: bool = False
 
 
 @dataclass
-class TransformerEncoderConfig:
+class Wav2VecTransformerConfig:
     dropout: float = 0.1
     conv: ConvConfig = ConvConfig()
-    encoder: TransformerSentenceEncoderConfig = TransformerSentenceEncoderConfig()
+    encoder: Wav2VecTransformerEncoderConfig = Wav2VecTransformerEncoderConfig()
 
 
 @dataclass
@@ -46,7 +41,7 @@ class QuantizeConfig:
     latent_vars: int = 320
     latent_groups: int = 2
     latent_dim: int = 0
-    latent_temp: tuple = (2, 0.5, 0.999995)
+    latent_temp: tuple = (2, 0.5, 0.999995)  # Quantize temperature (start, stop, decay factor)
 
 
 @dataclass
@@ -86,7 +81,7 @@ class Wav2VecEncoderModelConfig:
     loss: LossConfig = LossConfig()
     quantize: QuantizeConfig = QuantizeConfig()
     conv_features: ConvFeaturesConfig = ConvFeaturesConfig()
-    transformer_encoder: TransformerEncoderConfig = TransformerEncoderConfig()
+    transformer_encoder: Wav2VecTransformerConfig = Wav2VecTransformerConfig()
 
     mask: Wav2VecMaskConfig = Wav2VecMaskConfig()
 

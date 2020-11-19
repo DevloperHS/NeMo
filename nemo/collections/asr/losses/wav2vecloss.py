@@ -8,98 +8,60 @@ import torch
 import torch.nn.functional as F
 
 
-class Wav2vecCriterion(torch.nn.Module):
-    def __init__(self, infonce=True, loss_weights=None, log_keys=None):
+class Wav2VecCriterion(torch.nn.Module):
+    def __init__(self, feature_loss_weight, prob_ppl_weight, logit_temp):
         super().__init__()
-        self.infonce = infonce
-        self.loss_weights = loss_weights
-        self.log_keys = [] if log_keys is None else eval(log_keys)
+        self.feature_loss_weight = feature_loss_weight
+        self.prob_ppl_weight = prob_ppl_weight
+        self.logit_temp = logit_temp
 
-    def forward(self, model, sample, reduce=True, log_pred=False):
-        """Compute the loss for the given sample.
-
-        Returns a tuple with three elements:
-        1) the loss
-        2) the sample size, which is used as the denominator for the gradient
-        3) logging outputs to display while training
+    def forward(self,
+                logits: torch.tensor,
+                targets: torch.tensor,
+                negatives: torch.tensor,
+                feature_loss: torch.tensor,
+                prob_ppl_loss: torch.tensor,
+                reduce=True) -> [torch.tensor, torch.tensor, torch.tensor]:
         """
-        audio_signal, audio_lengths, _, _, padding_mask = sample
-        net_output = model(audio_signal, padding_mask)
-        logits = model.get_logits(net_output).float()
-        target = model.get_targets(net_output)
-
-        weights = None
-        if hasattr(model, 'get_target_weights') and not self.infonce:
-            weights = model.get_target_weights(target, net_output)
-            if torch.is_tensor(weights):
-                weights = weights.float()
-
-        losses = []
-
-        if self.infonce:
-            loss = F.cross_entropy(logits, target, reduction="sum" if reduce else "none",)
-        else:
-            loss = F.binary_cross_entropy_with_logits(
-                logits, target.float(), weights, reduction="sum" if reduce else "none",
-            )
-
-        sample_size = target.numel() if self.infonce else target.long().sum().item()
-        losses.append(loss.detach().clone())
-
-        if self.loss_weights is not None:
-            assert hasattr(model, "get_extra_losses")
-            extra_losses = model.get_extra_losses(net_output)
-            if torch.is_tensor(extra_losses):
-                extra_losses = [extra_losses]
-            if len(self.loss_weights) == 1 and len(extra_losses) != 1:
-                self.loss_weights = [self.loss_weights[0]] * len(extra_losses)
-            assert len(extra_losses) == len(self.loss_weights), f'{len(extra_losses)}, {len(self.loss_weights)}'
-            for p, coef in zip(extra_losses, self.loss_weights):
-                if coef != 0 and p is not None:
-                    p = coef * p.float() * sample_size
-                    loss += p
-                    losses.append(p)
-
-        logging_output = {
-            'loss': loss.item() if reduce else loss,
-            'ntokens': sample_size,
-            'sample_size': sample_size,
-        }
-
-        for lk in self.log_keys:
-            if lk in net_output:
-                logging_output[lk] = float((net_output[lk]))
-
-        if len(losses) > 1:
-            for i, l in enumerate(losses):
-                logging_output[f'loss_{i}'] = l.item()
-
-        if self.infonce:
-            with torch.no_grad():
-                if logits.numel() == 0:
-                    corr = 0
-                    count = 0
-                else:
-                    assert logits.dim() > 1, logits.shape
-                    max = logits.argmax(-1) == 0
-                    min = logits.argmin(-1) == 0
-                    both = max & min
-                    corr = max.long().sum().item() - both.long().sum().item()
-                    count = max.numel()
-
-                logging_output["correct"] = corr
-                logging_output["count"] = count
-
-        if log_pred:
-            logging_output['logits'] = logits.cpu().numpy()
-            logging_output['target'] = target.cpu().numpy()
-        return loss, sample_size, logging_output
-
-    @staticmethod
-    def logging_outputs_can_be_summed() -> bool:
+        Compute the contrastive loss with respect to the model outputs and sampled negatives from quantizer codebooks.
+        Args:
+            logits: Model activations
+            targets: The true target quantized representation
+            negatives: Sampled negatives from the quantizer codebooks. Sampled from all other timesteps.
+            feature_loss: Feature penalty (L2 Norm)
+            prob_ppl_loss:
+            reduce: Reduce loss via sum reduction (Default true)
+        Returns:
+            output loss values, feature loss, prob_ppl loss (after scaling).
         """
-        Whether the logging outputs returned by `forward` can be summed
-        across workers prior to calling `reduce_metrics`. Setting this
-        to True will improves distributed training speed.
-        """
-        return False
+
+        # Calculate similarity between logits and all targets
+        neg_is_pos = (targets == negatives).all(-1)
+        targets = targets.unsqueeze(0)
+        targets = torch.cat([targets, negatives], dim=0)
+        logits = torch.cosine_similarity(logits.float(), targets.float(), dim=-1).type_as(logits)
+
+        logits /= self.logit_temp
+
+        if neg_is_pos.any():
+            logits[1:][neg_is_pos] = float("-inf")
+
+        logits = logits.transpose(0, 2)  # TODO BxTxD ->
+        logits = logits.reshape(-1, logits.size(-1))  # TODO BxTxD ->
+
+        # Create similarity targets
+        targets = logits.new_zeros(logits.size(1) * logits.size(2), dtype=torch.long)
+
+        loss = F.cross_entropy(logits, targets, reduction="sum" if reduce else "none")
+
+        sample_size = targets.numel()
+
+        if self.feature_loss_weight != 0:
+            feature_loss = self.feature_loss_weight * feature_loss.float() * sample_size
+            loss += feature_loss
+
+        if self.prob_ppl_weight != 0:
+            prob_ppl_loss = self.prob_ppl_weight * prob_ppl_loss.float() * sample_size
+            loss += prob_ppl_loss
+
+        return loss, feature_loss, prob_ppl_loss

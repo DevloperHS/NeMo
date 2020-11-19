@@ -2,6 +2,7 @@ from typing import Optional, Tuple
 
 import numpy as np
 import torch
+from torch import nn
 
 
 def compute_mask_indices(
@@ -121,13 +122,49 @@ def compute_mask_indices(
     return mask
 
 
-def make_positions(tensor, padding_idx: int, onnx_trace: bool = False):
-    """Replace non-padding symbols with their position numbers.
-    Position numbers begin at padding_idx+1. Padding symbols are ignored.
+def init_bert_params(module):
     """
-    # The series of casts and type-conversions here are carefully
-    # balanced to both work with ONNX export and XLA. In particular XLA
-    # prefers ints, cumsum defaults to output longs, and ONNX doesn't know
-    # how to handle the dtype kwarg in cumsum.
-    mask = tensor.ne(padding_idx).int()
-    return (torch.cumsum(mask, dim=1).type_as(mask) * mask).long() + padding_idx
+    Initialize the weights specific to the BERT Model.
+    This overrides the default initializations depending on the specified arguments.
+        1. If normal_init_linear_weights is set then weights of linear
+           layer will be initialized using the normal distribution and
+           bias will be set to the specified value.
+        2. If normal_init_embed_weights is set then weights of embedding
+           layer will be initialized using the normal distribution.
+        3. If normal_init_proj_weights is set then weights of
+           in_project_weight for MultiHeadAttention initialized using
+           the normal distribution (to be validated).
+    """
+
+    if isinstance(module, nn.Linear):
+        module.weight.data.normal_(mean=0.0, std=0.02)
+        if module.bias is not None:
+            module.bias.data.zero_()
+    if isinstance(module, nn.Embedding):
+        module.weight.data.normal_(mean=0.0, std=0.02)
+        if module.padding_idx is not None:
+            module.weight.data[module.padding_idx].zero_()
+    if isinstance(module, nn.TransformerEncoderLayer):
+        module.self_attn.in_proj_weight.data.normal_(mean=0.0, std=0.02)
+
+
+class TransposeLast(nn.Module):
+    def __init__(self, deconstruct_idx=None):
+        super().__init__()
+        self.deconstruct_idx = deconstruct_idx
+
+    def forward(self, x):
+        if self.deconstruct_idx is not None:
+            x = x[self.deconstruct_idx]
+        return x.transpose(-2, -1)
+
+
+class SamePad(nn.Module):
+    def __init__(self, kernel_size):
+        super().__init__()
+        self.remove = kernel_size % 2 == 0
+
+    def forward(self, x):
+        if self.remove:
+            x = x[:, :, :-1]
+        return x

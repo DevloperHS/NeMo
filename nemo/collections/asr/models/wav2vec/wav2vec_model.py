@@ -1,28 +1,23 @@
-import logging
 import math
-from typing import List, Optional, Tuple
+from dataclasses import dataclass
+from typing import List, Optional, Tuple, Union, cast
 
 import numpy as np
 import torch
 import torch.nn.functional as F
-from omegaconf import DictConfig, OmegaConf
-from pytorch_lightning import Trainer
-from torch import nn
-
-from nemo.collections.asr.data.audio_to_text import AudioToCharDataset, TarredAudioToCharDataset
-from nemo.collections.asr.losses.wav2vecloss import Wav2vecCriterion
+from nemo.collections.asr.losses.wav2vecloss import Wav2VecCriterion
 from nemo.collections.asr.models.wav2vec.modules.config import (
-    TransformerEncoderConfig,
-    TransformerSentenceEncoderConfig,
+    Wav2VecTransformerConfig,
     Wav2VecEncoderModelConfig,
 )
 from nemo.collections.asr.models.wav2vec.modules.gumbel_vector_quantizer import GumbelVectorQuantizer
-from nemo.collections.asr.models.wav2vec.modules.multihead_attention import MultiheadAttention
-from nemo.collections.asr.models.wav2vec.modules.norm import Fp32GroupNorm, Fp32LayerNorm
-from nemo.collections.asr.models.wav2vec.modules.utils import compute_mask_indices
-from nemo.collections.asr.parts.perturb import process_augmentations
-from nemo.core import ModelPT
+from nemo.collections.asr.models.wav2vec.modules.utils import compute_mask_indices, init_bert_params, TransposeLast, \
+    SamePad
+from nemo.collections.asr.models.wav2vec.wav2vec_base import Wav2VecBase
 from nemo.core.classes.common import PretrainedModelInfo
+from omegaconf import DictConfig, OmegaConf
+from pytorch_lightning import Trainer
+from torch import nn
 
 
 def buffered_arange(max):
@@ -46,18 +41,23 @@ class GradMultiply(torch.autograd.Function):
         return grad * ctx.scale, None
 
 
-class Wav2VecEncoderModel(ModelPT):
-    def __init__(self, cfg: DictConfig, trainer: Trainer = None):
-        # Get global rank and total number of GPU workers for IterableDataset partitioning, if applicable
-        self.global_rank = 0
-        self.world_size = 0
-        self.local_rank = 0
-        if trainer is not None:
-            self.global_rank = (trainer.node_rank * trainer.num_gpus) + trainer.local_rank
-            self.world_size = trainer.num_nodes * trainer.num_gpus
-            self.local_rank = trainer.local_rank
+@dataclass
+class Wav2VecEncoderOutput:
+    """
+    Helper class for storing all the outputs from the Encoder model.
+    """
+    logits: torch.tensor
+    targets: torch.tensor
+    sampled_negatives: torch.tensor
+    padding_mask: torch.tensor
+    features_penalty: torch.tensor
+    probs_ppl: torch.tensor
+    cur_codebook_temp: float
 
-        super().__init__(cfg=cfg, trainer=trainer)
+
+class Wav2VecEncoderModel(Wav2VecBase):
+    def __init__(self, cfg: DictConfig, trainer: Trainer = None):
+        super().__init__(pretraining=True, cfg=cfg, trainer=trainer)
 
         schema = OmegaConf.structured(Wav2VecEncoderModelConfig)
         cfg = cfg.get('params', {})
@@ -100,8 +100,6 @@ class Wav2VecEncoderModel(ModelPT):
         self.codebook_negatives = cfg.codebook_negatives
         self.negatives_from_everywhere = cfg.negatives_from_everywhere
 
-        self.logit_temp = cfg.logit_temp
-
         final_dim = cfg.final_dim if cfg.final_dim > 0 else encoder_embed_dim
         self.final_dim = final_dim
         if cfg.quantize.quantize_targets:
@@ -138,7 +136,7 @@ class Wav2VecEncoderModel(ModelPT):
 
         self.mask_emb = nn.Parameter(torch.FloatTensor(encoder_embed_dim).uniform_())
 
-        self.encoder = TransformerEncoder(cfg.transformer_encoder)
+        self.encoder = Wav2VecTransformerEncoder(cfg.transformer_encoder)
         self.layer_norm = nn.LayerNorm(self.embed)
 
         self.target_glu = None
@@ -146,84 +144,29 @@ class Wav2VecEncoderModel(ModelPT):
             self.target_glu = nn.Sequential(nn.Linear(final_dim, final_dim * 2), nn.GLU())
 
         self.final_proj = nn.Linear(encoder_embed_dim, final_dim)
-        self.loss = Wav2vecCriterion(infonce=cfg.loss.infonce, loss_weights=cfg.loss.loss_weights)
-
-    def setup_dataloader(self, config: DictConfig):
-        if 'augmentor' in config:
-            augmentor = process_augmentations(config['augmentor'])
-        else:
-            augmentor = None
-
-        shuffle = config['shuffle']
-
-        # Instantiate tarred dataset loader or normal dataset loader
-        if config.get('is_tarred', False):
-            if ('tarred_audio_filepaths' in config and config['tarred_audio_filepaths'] is None) or (
-                    'manifest_filepath' in config and config['manifest_filepath'] is None
-            ):
-                logging.warning(
-                    "Could not load dataset as `manifest_filepath` was None or "
-                    f"`tarred_audio_filepaths` is None. Provided config : {config}"
-                )
-                return None
-
-            shuffle_n = config.get('shuffle_n', 4 * config['batch_size'])
-            dataset = TarredAudioToCharDataset(
-                audio_tar_filepaths=config['tarred_audio_filepaths'],
-                manifest_filepath=config['manifest_filepath'],
-                labels=[],
-                sample_rate=config['sample_rate'],
-                int_values=config.get('int_values', False),
-                augmentor=augmentor,
-                shuffle_n=shuffle_n,
-                max_duration=config.get('max_duration', None),
-                min_duration=config.get('min_duration', None),
-                max_utts=config.get('max_utts', 0),
-                trim=config.get('trim_silence', False),
-                global_rank=self.global_rank,
-                world_size=self.world_size,
-                return_pad_mask=True,
-            )
-            shuffle = False
-        else:
-            if 'manifest_filepath' in config and config['manifest_filepath'] is None:
-                logging.warning(f"Could not load dataset as `manifest_filepath` was None. Provided config : {config}")
-                return None
-
-            dataset = AudioToCharDataset(
-                manifest_filepath=config['manifest_filepath'],
-                labels=[],
-                sample_rate=config['sample_rate'],
-                int_values=config.get('int_values', False),
-                augmentor=augmentor,
-                max_duration=config.get('max_duration', None),
-                min_duration=config.get('min_duration', None),
-                max_utts=config.get('max_utts', 0),
-                return_pad_mask=True,
-            )
-
-        return torch.utils.data.DataLoader(
-            dataset=dataset,
-            batch_size=config['batch_size'],
-            collate_fn=dataset.collate_fn,
-            drop_last=config.get('drop_last', False),
-            shuffle=shuffle,
-            num_workers=config.get('num_workers', 0),
-            pin_memory=config.get('pin_memory', False),
+        self.loss = Wav2VecCriterion(
+            feature_loss_weight=cfg.loss.feature_loss_weight,
+            prob_ppl_weight=cfg.loss.prob_ppl_weight,
+            logit_temp=cfg.logit_temp
         )
 
-    def setup_training_data(self, train_data_config: DictConfig):
-        self._train_dl = self.setup_dataloader(train_data_config)
-
-    def setup_validation_data(self, val_data_config: DictConfig):
-        self._validation_dl = self.setup_dataloader(val_data_config)
-
-    def setup_test_data(self, test_data_config: DictConfig):
-        self._test_dl = self.setup_dataloader(test_data_config)
-
     def training_step(self, batch, batch_idx):
-        loss, sample_size, logging_output = self.loss(model=self, sample=batch)
+        audio_signal, audio_lengths, _, _, padding_mask = batch
+        self._update_quantizer_temp()
+        model_output = self(audio_signal, padding_mask)
+
+        loss, feature_loss, prob_ppl_loss = self.loss(
+            logits=model_output.logits,
+            targets=model_output.targets,
+            negatives=model_output.sampled_negatives,
+            feature_loss=model_output.features_penalty,
+            prob_ppl_loss=model_output.probs_ppl
+        )
+
         self.log('learning_rate', self._optimizer.param_groups[0]['lr'])
+        self.log('loss', loss)
+        self.log('feature_loss', feature_loss)
+        self.log('prob_ppl_loss', prob_ppl_loss)
         return {'loss': loss}
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
@@ -237,6 +180,12 @@ class Wav2VecEncoderModel(ModelPT):
     @classmethod
     def list_available_models(cls) -> Optional[PretrainedModelInfo]:
         return None
+
+    def _update_quantizer_temp(self):
+        if self.quantizer:
+            self.quantizer.set_num_updates(self.trainer.global_step)
+        if self.input_quantizer:
+            self.input_quantizer.set_num_updates(self.trainer.global_step)
 
     def apply_mask(self, x, padding_mask):
         B, T, C = x.shape
@@ -316,22 +265,8 @@ class Wav2VecEncoderModel(ModelPT):
         )  # to NxBxTxC
         return negs, neg_idxs
 
-    def compute_preds(self, x, y, negatives):
-
-        neg_is_pos = (y == negatives).all(-1)
-        y = y.unsqueeze(0)
-        targets = torch.cat([y, negatives], dim=0)
-
-        logits = torch.cosine_similarity(x.float(), targets.float(), dim=-1).type_as(x)
-
-        logits /= self.logit_temp
-
-        if neg_is_pos.any():
-            logits[1:][neg_is_pos] = float("-inf")
-
-        return logits
-
-    def forward(self, source, padding_mask=None, mask=True, features_only=False):
+    def forward(self, source, padding_mask=None, mask=True, features_only=False) -> Union[tuple, Wav2VecEncoderOutput]:
+        prob_ppl, cur_codebook_temp = None, None
 
         if self.feature_grad_mult > 0:
             features = self.feature_extractor(source)
@@ -341,7 +276,7 @@ class Wav2VecEncoderModel(ModelPT):
             with torch.no_grad():
                 features = self.feature_extractor(source)
 
-        features_pen = features.float().pow(2).mean()
+        features_penalty = features.float().pow(2).mean()  # L2 Norm on features
 
         features = features.transpose(1, 2)
         features = self.layer_norm(features)
@@ -360,20 +295,9 @@ class Wav2VecEncoderModel(ModelPT):
         features = self.dropout_input(features)
         unmasked_features = self.dropout_features(unmasked_features)
 
-        num_vars = None
-        code_ppl = None
-        prob_ppl = None
-        curr_temp = None
-
         if self.input_quantizer:
-            q = self.input_quantizer(features, produce_targets=False)
-            features = q["x"]
-            num_vars = q["num_vars"]
-            code_ppl = q["code_perplexity"]
-            prob_ppl = q["prob_perplexity"]
-            curr_temp = q["temp"]
+            features, prob_ppl, cur_codebook_temp = self.input_quantizer(features)
             features = self.project_inp(features)
-
         if mask:
             x, mask_indices = self.apply_mask(features, padding_mask)
             if mask_indices is not None:
@@ -388,106 +312,59 @@ class Wav2VecEncoderModel(ModelPT):
         x = self.encoder(x, padding_mask=padding_mask)
 
         if features_only:
-            return {"x": x, "padding_mask": padding_mask}
+            return x, padding_mask
 
         if self.quantizer:
-            q = self.quantizer(y, produce_targets=False)
-            y = q["x"]
-            num_vars = q["num_vars"]
-            code_ppl = q["code_perplexity"]
-            prob_ppl = q["prob_perplexity"]
-            curr_temp = q["temp"]
-
+            y, prob_ppl, cur_codebook_temp = self.input_quantizer(features)
             y = self.project_q(y)
 
             if self.negatives_from_everywhere:
-                neg_cands, *_ = self.quantizer(unmasked_features, produce_targets=False)
-                negs, _ = self.sample_negatives(neg_cands, y.size(1))
-                negs = self.project_q(negs)
+                neg_cands, *_ = self.quantizer(unmasked_features)
+                sampled_negatives, _ = self.sample_negatives(neg_cands, y.size(1))
+                sampled_negatives = self.project_q(sampled_negatives)
             else:
-                negs, _ = self.sample_negatives(y, y.size(1))
+                sampled_negatives, _ = self.sample_negatives(y, y.size(1))
 
             if self.codebook_negatives > 0:
                 cb_negs = self.quantizer.sample_from_codebook(y.size(0) * y.size(1), self.codebook_negatives)
                 cb_negs = cb_negs.view(self.codebook_negatives, y.size(0), y.size(1), -1)  # order doesnt matter
                 cb_negs = self.project_q(cb_negs)
-                negs = torch.cat([negs, cb_negs], dim=0)
+                sampled_negatives = torch.cat([sampled_negatives, cb_negs], dim=0)
         else:
             y = self.project_q(y)
 
             if self.negatives_from_everywhere:
-                negs, _ = self.sample_negatives(unmasked_features, y.size(1))
-                negs = self.project_q(negs)
+                sampled_negatives, _ = self.sample_negatives(unmasked_features, y.size(1))
+                sampled_negatives = self.project_q(sampled_negatives)
             else:
-                negs, _ = self.sample_negatives(y, y.size(1))
+                sampled_negatives, _ = self.sample_negatives(y, y.size(1))
 
         x = x[mask_indices].view(x.size(0), -1, x.size(-1))
 
         if self.target_glu:
             y = self.target_glu(y)
-            negs = self.target_glu(negs)
+            sampled_negatives = self.target_glu(sampled_negatives)
 
         x = self.final_proj(x)
-        x = self.compute_preds(x, y, negs)
-
-        result = {"x": x, "padding_mask": padding_mask, "features_pen": features_pen}
-
-        if prob_ppl is not None:
-            result["prob_perplexity"] = prob_ppl
-            result["code_perplexity"] = code_ppl
-            result["num_vars"] = num_vars
-            result["temp"] = curr_temp
-
-        return result
-
-    def quantize(self, x):
-        assert self.quantizer is not None
-        x = self.feature_extractor(x)
-        x = x.transpose(1, 2)
-        x = self.layer_norm(x)
-        return self.quantizer.forward_idx(x)
+        output = Wav2VecEncoderOutput(
+            logits=x,
+            targets=y,
+            sampled_negatives=sampled_negatives,
+            padding_mask=padding_mask,
+            features_penalty=features_penalty,
+            probs_ppl=prob_ppl,
+            cur_codebook_temp=cur_codebook_temp
+        )
+        return output
 
     def extract_features(self, source, padding_mask, mask=False):
-        res = self.forward(source, padding_mask, mask=mask, features_only=True)
-        return res["x"], res["padding_mask"]
-
-    def get_logits(self, net_output):
-        logits = net_output["x"]
-        logits = logits.transpose(0, 2)
-        logits = logits.reshape(-1, logits.size(-1))
-        return logits
-
-    def get_targets(self, net_output):
-        x = net_output["x"]
-        return x.new_zeros(x.size(1) * x.size(2), dtype=torch.long)
-
-    def get_extra_losses(self, net_output):
-        pen = []
-
-        if "prob_perplexity" in net_output:
-            pen.append((net_output["num_vars"] - net_output["prob_perplexity"]) / net_output["num_vars"])
-
-        if "features_pen" in net_output:
-            pen.append(net_output["features_pen"])
-
-        return pen
+        return self.forward(source, padding_mask, mask=mask, features_only=True)
 
     def remove_pretraining_modules(self):
         self.quantizer = None
         self.project_q = None
         self.target_glu = None
         self.final_proj = None
-
-
-class TransposeLast(nn.Module):
-    def __init__(self, deconstruct_idx=None):
-        super().__init__()
-        self.deconstruct_idx = deconstruct_idx
-
-    def forward(self, x):
-        if self.deconstruct_idx is not None:
-            x = x[self.deconstruct_idx]
-        return x.transpose(-2, -1)
 
 
 class ConvFeatureExtractionModel(nn.Module):
@@ -516,12 +393,12 @@ class ConvFeatureExtractionModel(nn.Module):
                 return nn.Sequential(
                     make_conv(),
                     nn.Dropout(p=dropout),
-                    nn.Sequential(TransposeLast(), Fp32LayerNorm(dim, elementwise_affine=True), TransposeLast(), ),
+                    nn.Sequential(TransposeLast(), nn.LayerNorm(dim, elementwise_affine=True), TransposeLast()),
                     nn.GELU(),
                 )
             elif is_group_norm:
                 return nn.Sequential(
-                    make_conv(), nn.Dropout(p=dropout), Fp32GroupNorm(dim, dim, affine=True), nn.GELU(),
+                    make_conv(), nn.Dropout(p=dropout), nn.GroupNorm(dim, dim, affine=True), nn.GELU(),
                 )
             else:
                 return nn.Sequential(make_conv(), nn.Dropout(p=dropout), nn.GELU())
@@ -546,18 +423,15 @@ class ConvFeatureExtractionModel(nn.Module):
             in_d = dim
 
     def forward(self, x):
-
         # BxT -> BxCxT
         x = x.unsqueeze(1)
-
         for conv in self.conv_layers:
             x = conv(x)
-
         return x
 
 
-class TransformerEncoder(nn.Module):
-    def __init__(self, cfg: TransformerEncoderConfig):
+class Wav2VecTransformerEncoder(nn.Module):
+    def __init__(self, cfg: Wav2VecTransformerConfig):
         super().__init__()
 
         conv_cfg = cfg.conv
@@ -583,14 +457,17 @@ class TransformerEncoder(nn.Module):
         encoder_cfg = cfg.encoder
         self.layers = nn.ModuleList(
             [
-                TransformerSentenceEncoderLayer(
-                    cfg=encoder_cfg, dropout=self.dropout, embedding_dim=self.embedding_dim
+                nn.TransformerEncoderLayer(
+                    d_model=self.embedding_dim,
+                    nhead=encoder_cfg.num_attention_heads,
+                    dim_feedforward=encoder_cfg.ffn_embedding_dim,
+                    dropout=self.dropout,
+                    activation=encoder_cfg.activation_fn.value
                 )
                 for _ in range(encoder_cfg.encoder_layers)
             ]
         )
 
-        self.layer_norm_first = encoder_cfg.layer_norm_first
         self.layer_norm = nn.LayerNorm(self.embedding_dim)
         self.layerdrop = cfg.encoder.encoder_layerdrop
         self.apply(init_bert_params)
@@ -624,139 +501,10 @@ class TransformerEncoder(nn.Module):
         for i, layer in enumerate(self.layers):
             dropout_probability = np.random.random()
             if not self.training or (dropout_probability > self.layerdrop):
-                x, z = layer(x, self_attn_padding_mask=padding_mask, need_weights=False)
+                x = layer(x, src_key_padding_mask=padding_mask)
                 layer_results.append(x)
 
         # T x B x C -> B x T x C
         x = x.transpose(0, 1)
 
         return x
-
-
-class TransformerSentenceEncoderLayer(nn.Module):
-    """
-    Implements a Transformer Encoder Layer used in BERT/XLM style pre-trained
-    models.
-    """
-
-    def __init__(
-            self, cfg: TransformerSentenceEncoderConfig, embedding_dim: float = 768, dropout: float = 0.1,
-    ) -> None:
-
-        super().__init__()
-        # Initialize parameters
-        self.embedding_dim = embedding_dim
-        self.dropout = dropout
-        self.activation_dropout = cfg.activation_dropout
-
-        # Initialize blocks
-        self.activation_fn = cfg.activation_fn.value()
-        self.self_attn = MultiheadAttention(
-            self.embedding_dim, cfg.num_attention_heads, dropout=cfg.attention_dropout, self_attention=True,
-        )
-
-        self.dropout1 = nn.Dropout(dropout)
-        self.dropout2 = nn.Dropout(self.activation_dropout)
-        self.dropout3 = nn.Dropout(dropout)
-
-        self.layer_norm_first = cfg.layer_norm_first
-
-        # layer norm associated with the self attention layer
-        self.self_attn_layer_norm = nn.LayerNorm(self.embedding_dim)
-        self.fc1 = nn.Linear(self.embedding_dim, cfg.ffn_embedding_dim)
-        self.fc2 = nn.Linear(cfg.ffn_embedding_dim, self.embedding_dim)
-
-        # layer norm associated with the position wise feed-forward NN
-        self.final_layer_norm = nn.LayerNorm(self.embedding_dim)
-
-    def forward(
-            self,
-            x: torch.Tensor,
-            self_attn_mask: torch.Tensor = None,
-            self_attn_padding_mask: torch.Tensor = None,
-            need_weights: bool = False,
-    ):
-        """
-        LayerNorm is applied either before or after the self-attention/ffn
-        modules similar to the original Transformer imlementation.
-        """
-        residual = x
-
-        if self.layer_norm_first:
-            x = self.self_attn_layer_norm(x)
-            x, attn = self.self_attn(
-                query=x,
-                key=x,
-                value=x,
-                key_padding_mask=self_attn_padding_mask,
-                need_weights=False,
-                attn_mask=self_attn_mask,
-            )
-            x = self.dropout1(x)
-            x = residual + x
-
-            residual = x
-            x = self.final_layer_norm(x)
-            x = self.activation_fn(self.fc1(x))
-            x = self.dropout2(x)
-            x = self.fc2(x)
-            x = self.dropout3(x)
-            x = residual + x
-        else:
-            x, attn = self.self_attn(
-                query=x, key=x, value=x, key_padding_mask=self_attn_padding_mask, need_weights=need_weights,
-            )
-
-            x = self.dropout1(x)
-            x = residual + x
-
-            x = self.self_attn_layer_norm(x)
-
-            residual = x
-            x = self.activation_fn(self.fc1(x))
-            x = self.dropout2(x)
-            x = self.fc2(x)
-            x = self.dropout3(x)
-            x = residual + x
-            x = self.final_layer_norm(x)
-
-        return x, attn
-
-
-class SamePad(nn.Module):
-    def __init__(self, kernel_size):
-        super().__init__()
-        self.remove = kernel_size % 2 == 0
-
-    def forward(self, x):
-        if self.remove:
-            x = x[:, :, :-1]
-        return x
-
-
-def init_bert_params(module):
-    """
-    Initialize the weights specific to the BERT Model.
-    This overrides the default initializations depending on the specified arguments.
-        1. If normal_init_linear_weights is set then weights of linear
-           layer will be initialized using the normal distribution and
-           bais will be set to the specified value.
-        2. If normal_init_embed_weights is set then weights of embedding
-           layer will be initialized using the normal distribution.
-        3. If normal_init_proj_weights is set then weights of
-           in_project_weight for MultiHeadAttention initialized using
-           the normal distribution (to be validated).
-    """
-
-    if isinstance(module, nn.Linear):
-        module.weight.data.normal_(mean=0.0, std=0.02)
-        if module.bias is not None:
-            module.bias.data.zero_()
-    if isinstance(module, nn.Embedding):
-        module.weight.data.normal_(mean=0.0, std=0.02)
-        if module.padding_idx is not None:
-            module.weight.data[module.padding_idx].zero_()
-    if isinstance(module, MultiheadAttention):
-        module.q_proj.weight.data.normal_(mean=0.0, std=0.02)
-        module.k_proj.weight.data.normal_(mean=0.0, std=0.02)
-        module.v_proj.weight.data.normal_(mean=0.0, std=0.02)

@@ -10,17 +10,17 @@ import torch.nn.functional as F
 
 class GumbelVectorQuantizer(nn.Module):
     def __init__(
-        self,
-        dim,
-        num_vars,
-        temp,
-        groups,
-        combine_groups,
-        vq_dim,
-        time_first,
-        activation=nn.GELU(),
-        weight_proj_depth=1,
-        weight_proj_factor=1,
+            self,
+            dim,
+            num_vars,
+            temp,
+            groups,
+            combine_groups,
+            vq_dim,
+            time_first,
+            activation=nn.GELU(),
+            weight_proj_depth=1,
+            weight_proj_factor=1,
     ):
         """Vector quantization using gumbel softmax
 
@@ -68,7 +68,7 @@ class GumbelVectorQuantizer(nn.Module):
             nn.init.normal_(self.weight_proj.weight, mean=0, std=1)
             nn.init.zeros_(self.weight_proj.bias)
 
-        assert len(temp) == 3, temp
+        assert len(temp) == 3, "Quantize temperature should be a tuple of 3 elements: (start, stop, decay factor)"
 
         self.max_temp, self.min_temp, self.temp_decay = temp
         self.curr_temp = self.max_temp
@@ -92,10 +92,6 @@ class GumbelVectorQuantizer(nn.Module):
                 self.codebook_indices = self.codebook_indices.flatten()
         return self.codebook_indices
 
-    def codebook(self):
-        indices = self.get_codebook_indices()
-        return self.vars.squeeze(0).index_select(0, indices).view(self.num_vars ** self.groups, -1)
-
     def sample_from_codebook(self, b, n):
         indices = self.get_codebook_indices()
         indices = indices.view(-1, self.groups)
@@ -107,20 +103,7 @@ class GumbelVectorQuantizer(nn.Module):
         z = self.vars.squeeze(0).index_select(0, indices.flatten()).view(b, n, -1)
         return z
 
-    def to_codebook_index(self, indices):
-        res = indices.new_full(indices.shape[:-1], 0)
-        for i in range(self.groups):
-            exponent = self.groups - i - 1
-            res += indices[..., i] * (self.num_vars ** exponent)
-        return res
-
-    def forward_idx(self, x):
-        res = self.forward(x, produce_targets=True)
-        return res["x"], res["targets"]
-
-    def forward(self, x, produce_targets=False):
-
-        result = {"num_vars": self.num_vars * self.groups}
+    def forward(self, x):
 
         if not self.time_first:
             x = x.transpose(1, 2)
@@ -132,13 +115,6 @@ class GumbelVectorQuantizer(nn.Module):
 
         _, k = x.max(-1)
         hard_x = x.new_zeros(*x.shape).scatter_(-1, k.view(-1, 1), 1.0).view(bsz * tsz, self.groups, -1)
-        hard_probs = torch.mean(hard_x.float(), dim=0)
-        result["code_perplexity"] = torch.exp(-torch.sum(hard_probs * torch.log(hard_probs + 1e-7), dim=-1)).sum()
-
-        avg_probs = torch.softmax(x.view(bsz * tsz, self.groups, -1).float(), dim=-1).mean(dim=0)
-        result["prob_perplexity"] = torch.exp(-torch.sum(avg_probs * torch.log(avg_probs + 1e-7), dim=-1)).sum()
-
-        result["temp"] = self.curr_temp
 
         if self.training:
             x = F.gumbel_softmax(x.float(), tau=self.curr_temp, hard=True).type_as(x)
@@ -151,9 +127,6 @@ class GumbelVectorQuantizer(nn.Module):
         if self.combine_groups:
             vars = vars.repeat(1, self.groups, 1)
 
-        if produce_targets:
-            result["targets"] = x.view(bsz * tsz * self.groups, -1).argmax(dim=-1).view(bsz, tsz, self.groups).detach()
-
         x = x.unsqueeze(-1) * vars
         x = x.view(bsz * tsz, self.groups, self.num_vars, -1)
         x = x.sum(-2)
@@ -162,6 +135,10 @@ class GumbelVectorQuantizer(nn.Module):
         if not self.time_first:
             x = x.transpose(1, 2)  # BTC -> BCT
 
-        result["x"] = x
+        num_vars = self.num_vars * self.groups
+        avg_probs = torch.softmax(x.view(bsz * tsz, self.groups, -1).float(), dim=-1).mean(dim=0)
+        quantize_prob_ppl = torch.exp(-torch.sum(avg_probs * torch.log(avg_probs + 1e-7), dim=-1)).sum()
+        quantize_prob_ppl = (num_vars - quantize_prob_ppl) / num_vars
+        cur_codebook_temp = self.curr_temp
 
-        return result
+        return x, quantize_prob_ppl, cur_codebook_temp

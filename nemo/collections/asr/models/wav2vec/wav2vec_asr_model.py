@@ -1,19 +1,16 @@
-import logging
 from typing import Optional, cast, List
 
 import torch
-from omegaconf import DictConfig, OmegaConf
-from pytorch_lightning import Trainer
-from torch import nn
-
-from nemo.collections.asr.data.audio_to_text import AudioToCharDataset, TarredAudioToCharDataset
 from nemo.collections.asr.losses.ctc import CTCLoss
 from nemo.collections.asr.metrics.wer import WER
 from nemo.collections.asr.models import ASRModel
 from nemo.collections.asr.models.wav2vec.modules.config import Wav2VecCTCEncoderConfig
+from nemo.collections.asr.models.wav2vec.wav2vec_base import Wav2VecBase
 from nemo.collections.asr.models.wav2vec.wav2vec_model import Wav2VecEncoderModel
-from nemo.collections.asr.parts.perturb import process_augmentations
 from nemo.core.classes.common import typecheck, PretrainedModelInfo
+from omegaconf import DictConfig, OmegaConf
+from pytorch_lightning import Trainer
+from torch import nn
 
 
 class Wav2VecCTCEncoder(nn.Module):
@@ -76,21 +73,12 @@ class Wav2VecCTCEncoder(nn.Module):
         return self._num_classes
 
 
-class Wav2VecASRModel(ASRModel):
+class Wav2VecASRModel(Wav2VecBase, ASRModel):
     def transcribe(self, paths2audio_files: List[str], batch_size: int = 4) -> List[str]:
         pass
 
     def __init__(self, encoder: Wav2VecEncoderModel, cfg: DictConfig, trainer: Trainer):
-        # Get global rank and total number of GPU workers for IterableDataset partitioning, if applicable
-        self.global_rank = 0
-        self.world_size = 1
-        self.local_rank = 0
-        if trainer is not None:
-            self.global_rank = (trainer.node_rank * trainer.num_gpus) + trainer.local_rank
-            self.world_size = trainer.num_nodes * trainer.num_gpus
-            self.local_rank = trainer.local_rank
-
-        super().__init__(cfg, trainer)
+        super().__init__(pretraining=False, cfg=cfg, trainer=trainer)
 
         schema = OmegaConf.structured(Wav2VecCTCEncoderConfig)
         cfg = cfg.get('params', {})
@@ -125,97 +113,9 @@ class Wav2VecASRModel(ASRModel):
             log_prediction=self._cfg.get("log_prediction", False),
         )
 
-    def setup_dataloader(self, config: DictConfig):
-        if 'augmentor' in config:
-            augmentor = process_augmentations(config['augmentor'])
-        else:
-            augmentor = None
-
-        shuffle = config['shuffle']
-
-        # Instantiate tarred dataset loader or normal dataset loader
-        if config.get('is_tarred', False):
-            if ('tarred_audio_filepaths' in config and config['tarred_audio_filepaths'] is None) or (
-                    'manifest_filepath' in config and config['manifest_filepath'] is None
-            ):
-                logging.warning(
-                    "Could not load dataset as `manifest_filepath` was None or "
-                    f"`tarred_audio_filepaths` is None. Provided config : {config}"
-                )
-                return None
-
-            shuffle_n = config.get('shuffle_n', 4 * config['batch_size'])
-            dataset = TarredAudioToCharDataset(
-                audio_tar_filepaths=config['tarred_audio_filepaths'],
-                manifest_filepath=config['manifest_filepath'],
-                labels=config['labels'],
-                sample_rate=config['sample_rate'],
-                int_values=config.get('int_values', False),
-                augmentor=augmentor,
-                shuffle_n=shuffle_n,
-                max_duration=config.get('max_duration', None),
-                min_duration=config.get('min_duration', None),
-                max_utts=config.get('max_utts', 0),
-                blank_index=config.get('blank_index', -1),
-                unk_index=config.get('unk_index', -1),
-                normalize=config.get('normalize_transcripts', False),
-                trim=config.get('trim_silence', True),
-                parser=config.get('parser', 'en'),
-                add_misc=config.get('add_misc', False),
-                global_rank=self.global_rank,
-                world_size=self.world_size,
-                return_pad_mask=True
-            )
-            shuffle = False
-        else:
-            if 'manifest_filepath' in config and config['manifest_filepath'] is None:
-                logging.warning(f"Could not load dataset as `manifest_filepath` was None. Provided config : {config}")
-                return None
-
-            dataset = AudioToCharDataset(
-                manifest_filepath=config['manifest_filepath'],
-                labels=config['labels'],
-                sample_rate=config['sample_rate'],
-                int_values=config.get('int_values', False),
-                augmentor=augmentor,
-                max_duration=config.get('max_duration', None),
-                min_duration=config.get('min_duration', None),
-                max_utts=config.get('max_utts', 0),
-                blank_index=config.get('blank_index', -1),
-                unk_index=config.get('unk_index', -1),
-                normalize=config.get('normalize_transcripts', False),
-                trim=config.get('trim_silence', True),
-                load_audio=config.get('load_audio', True),
-                parser=config.get('parser', 'en'),
-                add_misc=config.get('add_misc', False),
-                return_pad_mask=True
-            )
-
-        return torch.utils.data.DataLoader(
-            dataset=dataset,
-            batch_size=config['batch_size'],
-            collate_fn=dataset.collate_fn,
-            drop_last=config.get('drop_last', False),
-            shuffle=shuffle,
-            num_workers=config.get('num_workers', 0),
-            pin_memory=config.get('pin_memory', False),
-        )
-
     @classmethod
     def list_available_models(cls) -> Optional[PretrainedModelInfo]:
         return None
-
-    def setup_training_data(self, train_data_config: DictConfig):
-        self._update_dataset_config(dataset_name='train', config=train_data_config)
-        self._train_dl = self.setup_dataloader(train_data_config)
-
-    def setup_validation_data(self, val_data_config: DictConfig):
-        self._update_dataset_config(dataset_name='validation', config=val_data_config)
-        self._validation_dl = self.setup_dataloader(val_data_config)
-
-    def setup_test_data(self, test_data_config: DictConfig):
-        self._update_dataset_config(dataset_name='test', config=test_data_config)
-        self._test_dl = self.setup_dataloader(test_data_config)
 
     @typecheck()
     def forward(self, input_signal, padding_mask):
@@ -250,7 +150,7 @@ class Wav2VecASRModel(ASRModel):
             wer, _, _ = self._wer.compute()
             self.log('training_batch_wer', wer, prog_bar=True)
         self.log('learning_rate', self._optimizer.param_groups[0]['lr'])
-        self.log('loss', loss, prog_bar=False, on_step=False, on_epoch=True, sync_dist=True)
+        self.log('loss', loss, prog_bar=False, on_step=False, on_epoch=True)
         return {'loss': loss}
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
