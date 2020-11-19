@@ -73,7 +73,6 @@ class Wav2VecEncoderModel(Wav2VecBase):
 
         self.feature_extractor = ConvFeatureExtractionModel(
             conv_layers=feature_enc_layers,
-            dropout=0.0,
             mode=cfg.conv_features.extractor_mode,
             conv_bias=cfg.conv_features.conv_bias,
         )
@@ -86,9 +85,6 @@ class Wav2VecEncoderModel(Wav2VecBase):
         )
 
         self.mask_cfg = cfg.mask
-
-        self.dropout_input = nn.Dropout(cfg.dropout_input)
-        self.dropout_features = nn.Dropout(cfg.dropout_features)
 
         self.feature_grad_mult = cfg.feature_grad_mult
 
@@ -151,17 +147,7 @@ class Wav2VecEncoderModel(Wav2VecBase):
         )
 
     def training_step(self, batch, batch_idx):
-        audio_signal, audio_lengths, _, _, padding_mask = batch
-        self._update_quantizer_temp()
-        model_output = self(audio_signal, padding_mask)
-
-        loss, feature_loss, prob_ppl_loss = self.loss(
-            logits=model_output.logits,
-            targets=model_output.targets,
-            negatives=model_output.sampled_negatives,
-            feature_loss=model_output.features_penalty,
-            prob_ppl_loss=model_output.probs_ppl
-        )
+        loss, feature_loss, prob_ppl_loss = self._step(batch)
 
         self.log('learning_rate', self._optimizer.param_groups[0]['lr'])
         self.log('loss', loss)
@@ -170,12 +156,25 @@ class Wav2VecEncoderModel(Wav2VecBase):
         return {'loss': loss}
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
-        loss, sample_size, logging_output = self.loss(model=self, sample=batch)
+        loss, feature_loss, prob_ppl_loss = self._step(batch)
         self.log('val_loss', loss, prog_bar=True, on_epoch=True, sync_dist=True)
 
     def test_step(self, batch, batch_idx, dataloader_idx=0):
-        loss, sample_size, logging_output = self.loss(model=self, sample=batch)
+        loss, feature_loss, prob_ppl_loss = self._step(batch)
         self.log('test_loss', loss, prog_bar=True, on_epoch=True, sync_dist=True)
+
+    def _step(self, batch):
+        audio_signal, audio_lengths, _, _, padding_mask = batch
+        self._update_quantizer_temp()
+        model_output = self(audio_signal, padding_mask)
+        loss, feature_loss, prob_ppl_loss = self.loss(
+            logits=model_output.logits,
+            targets=model_output.targets,
+            negatives=model_output.sampled_negatives,
+            prob_ppl_loss=model_output.probs_ppl,
+            feature_loss=model_output.features_penalty
+        )
+        return loss, feature_loss, prob_ppl_loss
 
     @classmethod
     def list_available_models(cls) -> Optional[PretrainedModelInfo]:
@@ -292,9 +291,6 @@ class Wav2VecEncoderModel(Wav2VecBase):
         if self.post_extract_proj is not None:
             features = self.post_extract_proj(features)
 
-        features = self.dropout_input(features)
-        unmasked_features = self.dropout_features(unmasked_features)
-
         if self.input_quantizer:
             features, prob_ppl, cur_codebook_temp = self.input_quantizer(features)
             features = self.project_inp(features)
@@ -315,7 +311,7 @@ class Wav2VecEncoderModel(Wav2VecBase):
             return x, padding_mask
 
         if self.quantizer:
-            y, prob_ppl, cur_codebook_temp = self.input_quantizer(features)
+            y, prob_ppl, cur_codebook_temp = self.quantizer(y)
             y = self.project_q(y)
 
             if self.negatives_from_everywhere:
@@ -371,7 +367,6 @@ class ConvFeatureExtractionModel(nn.Module):
     def __init__(
             self,
             conv_layers: List[Tuple[int, int, int]],
-            dropout: float = 0.0,
             mode: str = "default",
             conv_bias: bool = False,
     ):
@@ -392,16 +387,15 @@ class ConvFeatureExtractionModel(nn.Module):
             if is_layer_norm:
                 return nn.Sequential(
                     make_conv(),
-                    nn.Dropout(p=dropout),
                     nn.Sequential(TransposeLast(), nn.LayerNorm(dim, elementwise_affine=True), TransposeLast()),
                     nn.GELU(),
                 )
             elif is_group_norm:
                 return nn.Sequential(
-                    make_conv(), nn.Dropout(p=dropout), nn.GroupNorm(dim, dim, affine=True), nn.GELU(),
+                    make_conv(), nn.GroupNorm(dim, dim, affine=True), nn.GELU(),
                 )
             else:
-                return nn.Sequential(make_conv(), nn.Dropout(p=dropout), nn.GELU())
+                return nn.Sequential(make_conv(), nn.GELU())
 
         in_d = 1
         self.conv_layers = nn.ModuleList()
@@ -438,6 +432,7 @@ class Wav2VecTransformerEncoder(nn.Module):
 
         self.dropout = cfg.dropout
         self.embedding_dim = cfg.encoder.embedding_dim
+        self.layer_norm_first = cfg.encoder.layer_norm_first
 
         self.pos_conv = nn.Conv1d(
             self.embedding_dim,
@@ -455,21 +450,17 @@ class Wav2VecTransformerEncoder(nn.Module):
         self.pos_conv = nn.Sequential(self.pos_conv, SamePad(conv_cfg.conv_pos), nn.GELU())
 
         encoder_cfg = cfg.encoder
-        self.layers = nn.ModuleList(
-            [
-                nn.TransformerEncoderLayer(
-                    d_model=self.embedding_dim,
-                    nhead=encoder_cfg.num_attention_heads,
-                    dim_feedforward=encoder_cfg.ffn_embedding_dim,
-                    dropout=self.dropout,
-                    activation=encoder_cfg.activation_fn.value
-                )
-                for _ in range(encoder_cfg.encoder_layers)
-            ]
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer=nn.TransformerEncoderLayer(
+                d_model=self.embedding_dim,
+                nhead=encoder_cfg.num_attention_heads,
+                dim_feedforward=encoder_cfg.ffn_embedding_dim,
+                dropout=self.dropout,
+                activation=encoder_cfg.activation_fn.value
+            ),
+            num_layers=encoder_cfg.encoder_layers
         )
-
         self.layer_norm = nn.LayerNorm(self.embedding_dim)
-        self.layerdrop = cfg.encoder.encoder_layerdrop
         self.apply(init_bert_params)
 
     def forward(self, x, padding_mask=None):
@@ -497,12 +488,7 @@ class Wav2VecTransformerEncoder(nn.Module):
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
 
-        layer_results = []
-        for i, layer in enumerate(self.layers):
-            dropout_probability = np.random.random()
-            if not self.training or (dropout_probability > self.layerdrop):
-                x = layer(x, src_key_padding_mask=padding_mask)
-                layer_results.append(x)
+        x = self.transformer_encoder(x, src_key_padding_mask=padding_mask)
 
         # T x B x C -> B x T x C
         x = x.transpose(0, 1)

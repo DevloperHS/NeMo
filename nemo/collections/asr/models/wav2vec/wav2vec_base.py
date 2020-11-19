@@ -14,13 +14,13 @@ class Wav2VecBase(ModelPT):
         self.global_rank = 0
         self.world_size = 0
         self.local_rank = 0
+        self.pretraining = pretraining
         if trainer is not None:
             self.global_rank = (trainer.node_rank * trainer.num_gpus) + trainer.local_rank
             self.world_size = trainer.num_nodes * trainer.num_gpus
             self.local_rank = trainer.local_rank
 
         super().__init__(cfg=cfg, trainer=trainer)
-        self.pretraining = pretraining
 
     def setup_dataloader(self, config: DictConfig):
         if 'augmentor' in config:

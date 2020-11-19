@@ -116,6 +116,12 @@ class GumbelVectorQuantizer(nn.Module):
         _, k = x.max(-1)
         hard_x = x.new_zeros(*x.shape).scatter_(-1, k.view(-1, 1), 1.0).view(bsz * tsz, self.groups, -1)
 
+        # Calculate quantize prob perplexity
+        num_vars = self.num_vars * self.groups
+        avg_probs = torch.softmax(x.view(bsz * tsz, self.groups, -1).float(), dim=-1).mean(dim=0)
+        quantize_prob_ppl = torch.exp(-torch.sum(avg_probs * torch.log(avg_probs + 1e-7), dim=-1)).sum()
+        quantize_prob_ppl = (num_vars - quantize_prob_ppl) / num_vars
+
         if self.training:
             x = F.gumbel_softmax(x.float(), tau=self.curr_temp, hard=True).type_as(x)
         else:
@@ -132,13 +138,9 @@ class GumbelVectorQuantizer(nn.Module):
         x = x.sum(-2)
         x = x.view(bsz, tsz, -1)
 
+        cur_codebook_temp = self.curr_temp
+
         if not self.time_first:
             x = x.transpose(1, 2)  # BTC -> BCT
-
-        num_vars = self.num_vars * self.groups
-        avg_probs = torch.softmax(x.view(bsz * tsz, self.groups, -1).float(), dim=-1).mean(dim=0)
-        quantize_prob_ppl = torch.exp(-torch.sum(avg_probs * torch.log(avg_probs + 1e-7), dim=-1)).sum()
-        quantize_prob_ppl = (num_vars - quantize_prob_ppl) / num_vars
-        cur_codebook_temp = self.curr_temp
 
         return x, quantize_prob_ppl, cur_codebook_temp

@@ -20,7 +20,7 @@ model:
     shuffle: False
     num_workers: 4
   optim:
-    name: adam
+    name: adamw
     lr: 0.0005
     eps: 1e-06
     # optimizer arguments
