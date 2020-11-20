@@ -86,6 +86,9 @@ class Wav2VecEncoderModelConfig:
 
     mask: Wav2VecMaskConfig = Wav2VecMaskConfig()
 
+    dropout_input: float = 0.1
+    dropout_features: float = 0.1
+
     final_dim: int = 768
 
     n_negatives: int = 100
