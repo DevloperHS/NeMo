@@ -16,7 +16,6 @@ import os
 from typing import Callable, Dict, List, Optional, Union
 
 import braceexpand
-import numpy as np
 import torch
 import webdataset as wd
 from torch.nn import functional as F
@@ -79,17 +78,6 @@ def _speech_collate_fn(batch, pad_id):
     return audio_signal, audio_lengths, tokens, tokens_lengths
 
 
-def crop_to_max_size(wav, target_size):
-    size = len(wav)
-    diff = size - target_size
-    if diff <= 0:
-        return wav
-
-    start = np.random.randint(0, diff + 1)
-    end = size - diff + start
-    return wav[start:end]
-
-
 class _AudioTextDataset(Dataset):
     """
     Dataset that loads tensors via a json file containing paths to audio files, transcripts, and durations (in seconds).
@@ -121,7 +109,7 @@ class _AudioTextDataset(Dataset):
     def output_types(self) -> Optional[Dict[str, NeuralType]]:
         """Returns definitions of module output ports.
                """
-        output = {
+        return {
             'audio_signal': NeuralType(
                 ('B', 'T'),
                 AudioSignal(freq=self._sample_rate)  # TODO: self._sample_rate is not defined anywhere
@@ -132,24 +120,23 @@ class _AudioTextDataset(Dataset):
             'transcripts': NeuralType(('B', 'T'), LabelsType()),
             'transcript_length': NeuralType(tuple('B'), LengthsType()),
         }
-        return output
 
     def __init__(
-            self,
-            manifest_filepath: str,
-            parser: Union[str, Callable],
-            sample_rate: int,
-            int_values: bool = False,
-            augmentor: 'nemo.collections.asr.parts.perturb.AudioAugmentor' = None,
-            max_duration: Optional[int] = None,
-            min_duration: Optional[int] = None,
-            max_utts: int = 0,
-            trim: bool = False,
-            bos_id: Optional[int] = None,
-            eos_id: Optional[int] = None,
-            pad_id: int = 0,
-            load_audio: bool = True,
-            add_misc: bool = False,
+        self,
+        manifest_filepath: str,
+        parser: Union[str, Callable],
+        sample_rate: int,
+        int_values: bool = False,
+        augmentor: 'nemo.collections.asr.parts.perturb.AudioAugmentor' = None,
+        max_duration: Optional[int] = None,
+        min_duration: Optional[int] = None,
+        max_utts: int = 0,
+        trim: bool = False,
+        bos_id: Optional[int] = None,
+        eos_id: Optional[int] = None,
+        pad_id: int = 0,
+        load_audio: bool = True,
+        add_misc: bool = False,
     ):
         self.parser = parser
 
@@ -247,7 +234,7 @@ class AudioToCharDataset(_AudioTextDataset):
     def output_types(self) -> Optional[Dict[str, NeuralType]]:
         """Returns definitions of module output ports.
                """
-        output = {
+        return {
             'audio_signal': NeuralType(
                 ('B', 'T'),
                 AudioSignal(freq=self._sample_rate)
@@ -258,28 +245,27 @@ class AudioToCharDataset(_AudioTextDataset):
             'transcripts': NeuralType(('B', 'T'), LabelsType()),
             'transcript_length': NeuralType(tuple('B'), LengthsType()),
         }
-        return output
 
     def __init__(
-            self,
-            manifest_filepath: str,
-            labels: Union[str, List[str]],
-            sample_rate: int,
-            int_values: bool = False,
-            augmentor: 'nemo.collections.asr.parts.perturb.AudioAugmentor' = None,
-            max_duration: Optional[float] = None,
-            min_duration: Optional[float] = None,
-            max_utts: int = 0,
-            blank_index: int = -1,
-            unk_index: int = -1,
-            normalize: bool = True,
-            trim: bool = False,
-            bos_id: Optional[int] = None,
-            eos_id: Optional[int] = None,
-            pad_id: int = 0,
-            load_audio: bool = True,
-            parser: Union[str, Callable] = 'en',
-            add_misc: bool = False,
+        self,
+        manifest_filepath: str,
+        labels: Union[str, List[str]],
+        sample_rate: int,
+        int_values: bool = False,
+        augmentor: 'nemo.collections.asr.parts.perturb.AudioAugmentor' = None,
+        max_duration: Optional[float] = None,
+        min_duration: Optional[float] = None,
+        max_utts: int = 0,
+        blank_index: int = -1,
+        unk_index: int = -1,
+        normalize: bool = True,
+        trim: bool = False,
+        bos_id: Optional[int] = None,
+        eos_id: Optional[int] = None,
+        pad_id: int = 0,
+        load_audio: bool = True,
+        parser: Union[str, Callable] = 'en',
+        add_misc: bool = False,
     ):
         self.labels = labels
 
@@ -431,7 +417,7 @@ class AudioToCharWithDursDataset(AudioToCharDataset):
 
         text = [
             self._interleave(
-                x=torch.empty(len(t) + 1, dtype=torch.long, device=t.device, ).fill_(self.vocab.blank), y=t,
+                x=torch.empty(len(t) + 1, dtype=torch.long, device=t.device,).fill_(self.vocab.blank), y=t,
             )
             for t in text
         ]
@@ -463,7 +449,7 @@ class AudioToBPEDataset(_AudioTextDataset):
     def output_types(self) -> Optional[Dict[str, NeuralType]]:
         """Returns definitions of module output ports.
                """
-        output = {
+        return {
             'audio_signal': NeuralType(
                 ('B', 'T'),
                 AudioSignal(freq=self._sample_rate)
@@ -474,22 +460,21 @@ class AudioToBPEDataset(_AudioTextDataset):
             'transcripts': NeuralType(('B', 'T'), LabelsType()),
             'transcript_length': NeuralType(tuple('B'), LengthsType()),
         }
-        return output
 
     def __init__(
-            self,
-            manifest_filepath: str,
-            tokenizer: 'nemo.collections.common.tokenizers.TokenizerSpec',
-            sample_rate: int,
-            int_values: bool = False,
-            augmentor: 'nemo.collections.asr.parts.perturb.AudioAugmentor' = None,
-            max_duration: Optional[int] = None,
-            min_duration: Optional[int] = None,
-            max_utts: int = 0,
-            trim: bool = False,
-            load_audio: bool = True,
-            add_misc: bool = False,
-            use_start_end_token: bool = True,
+        self,
+        manifest_filepath: str,
+        tokenizer: 'nemo.collections.common.tokenizers.TokenizerSpec',
+        sample_rate: int,
+        int_values: bool = False,
+        augmentor: 'nemo.collections.asr.parts.perturb.AudioAugmentor' = None,
+        max_duration: Optional[int] = None,
+        min_duration: Optional[int] = None,
+        max_utts: int = 0,
+        trim: bool = False,
+        load_audio: bool = True,
+        add_misc: bool = False,
+        use_start_end_token: bool = True,
     ):
         if use_start_end_token and hasattr(tokenizer, 'bos_token'):
             bos_id = tokenizer.bos_id
@@ -559,14 +544,14 @@ class AudioLabelDataset(Dataset):
     """
 
     def __init__(
-            self,
-            manifest_filepath,
-            featurizer,
-            labels=None,
-            max_duration=None,
-            min_duration=None,
-            trim=False,
-            load_audio=True,
+        self,
+        manifest_filepath,
+        featurizer,
+        labels=None,
+        max_duration=None,
+        min_duration=None,
+        trim=False,
+        load_audio=True,
     ):
         self.collection = collections.ASRSpeechLabel(
             manifests_files=manifest_filepath.split(','), min_duration=min_duration, max_duration=max_duration
@@ -791,11 +776,11 @@ class _TarredAudioToTextDataset(IterableDataset):
         # Put together WebDataset
         self._dataset = (
             wd.Dataset(audio_tar_filepaths)
-                .shuffle(shuffle_n)
-                .rename(audio='wav', key='__key__')
-                .to_tuple('audio', 'key')
-                .pipe(self._filter)
-                .map(f=self._build_sample)
+            .shuffle(shuffle_n)
+            .rename(audio='wav', key='__key__')
+            .to_tuple('audio', 'key')
+            .pipe(self._filter)
+            .map(f=self._build_sample)
         )
 
     def _filter(self, iterator):
