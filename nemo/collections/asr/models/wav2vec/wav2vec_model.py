@@ -1,8 +1,7 @@
 import math
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Union, cast
+from typing import List, Optional, Tuple, Union
 
-import numpy as np
 import torch
 import torch.nn.functional as F
 from nemo.collections.asr.losses.wav2vecloss import Wav2VecCriterion
