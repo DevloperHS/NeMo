@@ -4,10 +4,9 @@ from typing import Optional, Dict, Union
 
 import torch
 from nemo.collections.asr.data import audio_to_text_dataset
-from nemo.collections.asr.data.audio_to_text import AudioToCharDataset, TarredAudioToCharDataset
 from nemo.collections.asr.parts.perturb import process_augmentations
 from nemo.core import ModelPT
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 from pytorch_lightning import Trainer
 
 
