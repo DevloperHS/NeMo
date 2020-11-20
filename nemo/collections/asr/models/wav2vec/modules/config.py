@@ -23,7 +23,7 @@ class Wav2VecTransformerEncoderConfig:
     num_attention_heads: int = 8
     dropout: float = 0.1
     activation_fn: Wav2VecActivationType = Wav2VecActivationType.relu
-    layer_norm_first: bool = True
+    layer_norm_first: bool = False
 
 
 @dataclass
@@ -46,8 +46,8 @@ class QuantizeConfig:
 
 @dataclass
 class ConvFeaturesConfig:
-    extractor_mode: str = 'layer_norm'
-    conv_bias: bool = True
+    extractor_mode: str = 'default'
+    conv_bias: bool = False
     conv_feature_layers: List = field(
         default_factory=lambda: [(512, 10, 5), (512, 8, 4)] + [(512, 4, 2)] * 3 + [(512, 1, 1)]
     )  # Default conv layers as defined in the fairseq repo
@@ -89,7 +89,7 @@ class Wav2VecEncoderModelConfig:
     dropout_input: float = 0.1
     dropout_features: float = 0.1
 
-    final_dim: int = 768
+    final_dim: int = 0
 
     n_negatives: int = 100
     cross_sample_negatives: int = 0
