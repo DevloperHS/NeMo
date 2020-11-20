@@ -79,16 +79,6 @@ def _speech_collate_fn(batch, pad_id):
     return audio_signal, audio_lengths, tokens, tokens_lengths
 
 
-def _padding_collate_fn(batch, pad_id):
-    audio_signal, audio_lengths, tokens, tokens_lengths = _speech_collate_fn(batch, pad_id)
-
-    padding_mask = torch.full(size=audio_signal.size(), fill_value=True, dtype=torch.bool)
-
-    for x, length in enumerate(audio_lengths):
-        padding_mask[x][:length] = False
-    return audio_signal, audio_lengths, tokens, tokens_lengths, padding_mask
-
-
 def crop_to_max_size(wav, target_size):
     size = len(wav)
     diff = size - target_size
@@ -142,8 +132,6 @@ class _AudioTextDataset(Dataset):
             'transcripts': NeuralType(('B', 'T'), LabelsType()),
             'transcript_length': NeuralType(tuple('B'), LengthsType()),
         }
-        if self.return_pad_mask:
-            output['padding_mask'] = NeuralType(('B', 'T'), LabelsType())
         return output
 
     def __init__(
@@ -162,7 +150,6 @@ class _AudioTextDataset(Dataset):
             pad_id: int = 0,
             load_audio: bool = True,
             add_misc: bool = False,
-            return_pad_mask: bool = False,
     ):
         self.parser = parser
 
@@ -179,7 +166,6 @@ class _AudioTextDataset(Dataset):
         self.eos_id = eos_id
         self.bos_id = bos_id
         self.pad_id = pad_id
-        self.return_pad_mask = return_pad_mask
         self.load_audio = load_audio
         self._add_misc = add_misc
 
@@ -221,10 +207,7 @@ class _AudioTextDataset(Dataset):
         return len(self.collection)
 
     def _collate_fn(self, batch):
-        if self.return_pad_mask:
-            return _padding_collate_fn(batch, pad_id=self.pad_id)
-        else:
-            return _speech_collate_fn(batch, pad_id=self.pad_id)
+        return _speech_collate_fn(batch, pad_id=self.pad_id)
 
 
 @experimental
@@ -275,8 +258,6 @@ class AudioToCharDataset(_AudioTextDataset):
             'transcripts': NeuralType(('B', 'T'), LabelsType()),
             'transcript_length': NeuralType(tuple('B'), LengthsType()),
         }
-        if self.return_pad_mask:
-            output['padding_mask'] = NeuralType(('B', 'T'), LabelsType())
         return output
 
     def __init__(
@@ -299,7 +280,6 @@ class AudioToCharDataset(_AudioTextDataset):
             load_audio: bool = True,
             parser: Union[str, Callable] = 'en',
             add_misc: bool = False,
-            return_pad_mask: bool = False,
     ):
         self.labels = labels
 
@@ -322,7 +302,6 @@ class AudioToCharDataset(_AudioTextDataset):
             pad_id=pad_id,
             load_audio=load_audio,
             add_misc=add_misc,
-            return_pad_mask=return_pad_mask,
         )
 
 
@@ -495,8 +474,6 @@ class AudioToBPEDataset(_AudioTextDataset):
             'transcripts': NeuralType(('B', 'T'), LabelsType()),
             'transcript_length': NeuralType(tuple('B'), LengthsType()),
         }
-        if self.return_pad_mask:
-            output['padding_mask'] = NeuralType(('B', 'T'), LabelsType())
         return output
 
     def __init__(
@@ -513,7 +490,6 @@ class AudioToBPEDataset(_AudioTextDataset):
             load_audio: bool = True,
             add_misc: bool = False,
             use_start_end_token: bool = True,
-            return_pad_mask: bool = False,
     ):
         if use_start_end_token and hasattr(tokenizer, 'bos_token'):
             bos_id = tokenizer.bos_id
@@ -553,7 +529,6 @@ class AudioToBPEDataset(_AudioTextDataset):
             trim=trim,
             load_audio=load_audio,
             add_misc=add_misc,
-            return_pad_mask=return_pad_mask,
         )
 
 
@@ -751,7 +726,6 @@ class _TarredAudioToTextDataset(IterableDataset):
         shard_strategy: str = "scatter",
         global_rank: int = 0,
         world_size: int = 0,
-        return_pad_mask: bool = False,
     ):
         self.collection = collections.ASRAudioText(
             manifests_files=manifest_filepath.split(','),
@@ -767,7 +741,6 @@ class _TarredAudioToTextDataset(IterableDataset):
         self.eos_id = eos_id
         self.bos_id = bos_id
         self.pad_id = pad_id
-        self.return_pad_mask = return_pad_mask
         self._add_misc = add_misc
 
         valid_shard_strategies = ['scatter', 'replicate']
@@ -851,10 +824,7 @@ class _TarredAudioToTextDataset(IterableDataset):
         return TarredAudioFilter(self.collection)
 
     def _collate_fn(self, batch):
-        if self.return_pad_mask:
-            return _padding_collate_fn(batch, self.pad_id)
-        else:
-            return _speech_collate_fn(batch, self.pad_id)
+        return _speech_collate_fn(batch, self.pad_id)
 
     def _build_sample(self, tup):
         """Builds the training sample by combining the data from the WebDataset with the manifest info.
@@ -1010,7 +980,6 @@ class TarredAudioToCharDataset(_TarredAudioToTextDataset):
         shard_strategy: str = "scatter",
         global_rank: int = 0,
         world_size: int = 0,
-        return_pad_mask: bool = False,
     ):
         self.labels = labels
 
@@ -1035,7 +1004,6 @@ class TarredAudioToCharDataset(_TarredAudioToTextDataset):
             add_misc=add_misc,
             pad_id=pad_id,
             shard_strategy=shard_strategy,
-            return_pad_mask=return_pad_mask,
             global_rank=global_rank,
             world_size=world_size,
         )
@@ -1129,7 +1097,6 @@ class TarredAudioToBPEDataset(_TarredAudioToTextDataset):
         add_misc: bool = False,
         use_start_end_token: bool = True,
         shard_strategy: str = "scatter",
-        return_pad_mask: bool = False,
         global_rank: int = 0,
         world_size: int = 0,
     ):
@@ -1173,7 +1140,6 @@ class TarredAudioToBPEDataset(_TarredAudioToTextDataset):
             add_misc=add_misc,
             pad_id=pad_id,
             shard_strategy=shard_strategy,
-            return_pad_mask=return_pad_mask,
             global_rank=global_rank,
             world_size=world_size,
         )

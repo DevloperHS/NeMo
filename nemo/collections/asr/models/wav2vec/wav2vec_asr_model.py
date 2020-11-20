@@ -78,7 +78,7 @@ class Wav2VecASRModel(Wav2VecBase, ASRModel):
         pass
 
     def __init__(self, encoder: Wav2VecEncoderModel, cfg: DictConfig, trainer: Trainer):
-        super().__init__(pretraining=False, cfg=cfg, trainer=trainer)
+        super().__init__(cfg=cfg, trainer=trainer)
 
         schema = OmegaConf.structured(Wav2VecCTCEncoderConfig)
         cfg = cfg.get('params', {})

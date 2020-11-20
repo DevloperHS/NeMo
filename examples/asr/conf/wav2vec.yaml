@@ -7,18 +7,21 @@ model:
     batch_size: 32
     shuffle: True
     num_workers: 4
+    labels: [] # No vocab needed for pre-training
   validation_ds:
     manifest_filepath: ???
     sample_rate: 16000
     batch_size: 32
     shuffle: False
     num_workers: 1
+    labels: []
   test_ds:
     manifest_filepath: null
     sample_rate: 16000
     batch_size: 32
     shuffle: False
     num_workers: 4
+    labels: []
   optim:
     name: adamw
     lr: 0.0005

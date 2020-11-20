@@ -56,7 +56,7 @@ class Wav2VecEncoderOutput:
 
 class Wav2VecEncoderModel(Wav2VecBase):
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
-        super().__init__(pretraining=True, cfg=cfg, trainer=trainer)
+        super().__init__(cfg=cfg, trainer=trainer)
 
         schema = OmegaConf.structured(Wav2VecEncoderModelConfig)
         cfg = cfg.get('params', {})
@@ -166,7 +166,10 @@ class Wav2VecEncoderModel(Wav2VecBase):
         self.log('test_loss', loss, prog_bar=True, on_epoch=True, sync_dist=True)
 
     def _step(self, batch):
-        audio_signal, audio_lengths, _, _, padding_mask = batch
+        audio_signal, audio_lengths, _, _ = batch
+
+        padding_mask = self._create_padding_mask(audio_lengths, audio_signal)
+
         self._update_quantizer_temp()
         model_output = self(audio_signal, padding_mask)
         loss, feature_loss, prob_ppl_loss = self.loss(
@@ -177,6 +180,12 @@ class Wav2VecEncoderModel(Wav2VecBase):
             feature_loss=model_output.features_penalty
         )
         return loss, feature_loss, prob_ppl_loss
+
+    def _create_padding_mask(self, audio_lengths, audio_signal):
+        padding_mask = torch.full(size=audio_signal.size(), fill_value=True, dtype=torch.bool, device=self.device)
+        for x, length in enumerate(audio_lengths):
+            padding_mask[x][:length] = False
+        return padding_mask
 
     @classmethod
     def list_available_models(cls) -> Optional[PretrainedModelInfo]:
