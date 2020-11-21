@@ -441,8 +441,8 @@ class ConvFeatureExtractionModel(nn.Module):
                     dim,
                     k,
                     stride,
-                    is_layer_norm=mode is Wav2VecConvExtractorMode.layer_norm,
-                    is_group_norm=mode is Wav2VecConvExtractorMode.default and i == 0,
+                    is_layer_norm=mode.value is Wav2VecConvExtractorMode.layer_norm.value,
+                    is_group_norm=mode.value is Wav2VecConvExtractorMode.default.value and i == 0,
                     conv_bias=conv_bias,
                 )
             )
