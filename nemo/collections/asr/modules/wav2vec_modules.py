@@ -240,14 +240,14 @@ def compute_mask_indices(
             sz = all_sz
             num_mask = all_num_mask
 
-        if mask_type.value == Wav2VecMaskType.static.value:
+        if mask_type.value is Wav2VecMaskType.static.value:
             lengths = np.full(num_mask, mask_length)
-        elif mask_type.value == Wav2VecMaskType.uniform:
+        elif mask_type.value is Wav2VecMaskType.uniform:
             lengths = np.random.randint(mask_other, mask_length * 2 + 1, size=num_mask)
-        elif mask_type.value == Wav2VecMaskType.normal.value:
+        elif mask_type.value is Wav2VecMaskType.normal.value:
             lengths = np.random.normal(mask_length, mask_other, size=num_mask)
             lengths = [max(1, int(round(x))) for x in lengths]
-        elif mask_type.value == Wav2VecMaskType.poisson.value:
+        elif mask_type.value is Wav2VecMaskType.poisson.value:
             lengths = np.random.poisson(mask_length, size=num_mask)
             lengths = [int(round(x)) for x in lengths]
         else:

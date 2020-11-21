@@ -17,7 +17,7 @@
 # LICENSE file in the root directory of this source tree.
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import Enum, auto
 from typing import List, Optional
 
 
@@ -34,10 +34,10 @@ class Wav2VecMaskType(Enum):
         normal = sample from normal distribution with mean mask_length and stdev mask_other. mask is min 1 element
         poisson = sample from possion distribution with lambda = mask length
     """
-    static = 'static'
-    uniform = 'uniform'
-    normal = 'normal'
-    poisson = 'poisson'
+    static = auto()
+    uniform = auto()
+    normal = auto()
+    poisson = auto()
 
 
 class Wav2VecConvExtractorMode(Enum):
@@ -45,8 +45,8 @@ class Wav2VecConvExtractorMode(Enum):
     Mode for feature extractor. default has a single group norm with d groups in the first conv block,
     whereas layer_norm has layer norms in every block.
     """
-    default = 'default'
-    layer_norm = 'layer_norm'
+    default = auto()
+    layer_norm = auto()
 
 
 @dataclass
@@ -141,7 +141,7 @@ class QuantizeConfig:
 
 @dataclass
 class ConvFeaturesConfig:
-    extractor_mode: str = field(
+    extractor_mode: Wav2VecConvExtractorMode = field(
         default=Wav2VecConvExtractorMode.default
     )
     conv_bias: bool = field(
@@ -172,7 +172,7 @@ class Wav2VecMaskConfig:
         default=0.65,
         metadata={'help': 'Probability of replacing token with mask'}
     )
-    mask_type: str = field(
+    mask_type: Wav2VecMaskType = field(
         default=Wav2VecMaskType.static,
     )
     mask_other: int = field(
