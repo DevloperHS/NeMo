@@ -20,29 +20,36 @@ from nemo.core.config import hydra_runner
 from nemo.utils import logging
 from nemo.utils.exp_manager import exp_manager
 
-
 """
+Pre-train a wav2vec 2.0 transformer model on audio. Uses a contrastive loss function to pre-train on unlabelled audio,
+using a task similar to masked language modeling in NLP. In wav2vec, we mask portions of the audio 
+and the model is trained by minimising the distance of the ground truth for the masked section, 
+using the ground truth quantized codebook representation. Distractors are obtained from other time steps.
+See :class:`Wav2VecCriterion` for more information.
+
+Reference: https://arxiv.org/abs/2006.11477
 
 python examples/asr/wav2vec.py \
         model.train_ds.manifest_path="./examples/asr/train.tsv" \
         model.validation_ds.manifest_path="./examples/asr/valid.tsv" \
         model.test_ds.manifest_path="./examples/asr/valid.tsv" \
         hydra.run.dir="." \
-        trainer.gpus=0 \
-        trainer.max_epochs=50
+        trainer.gpus=1 \
+        trainer.max_epochs=100
         
         
 Basic run (on CPU for 50 epochs):
     python examples/asr/wav2vec.py \
-        model.train_ds.manifest_filepath="/Users/okuchaiev/Data/an4_dataset/an4_train.json" \
-        model.validation_ds.manifest_filepath="/Users/okuchaiev/Data/an4_dataset/an4_val.json" \
+        model.train_ds.manifest_path="./examples/asr/train.tsv" \
+        model.validation_ds.manifest_path="./examples/asr/valid.tsv" \
+        model.test_ds.manifest_path="./examples/asr/valid.tsv" \
         hydra.run.dir="." \
-        trainer.gpus=0 \
+        trainer.gpus=1 \
         trainer.max_epochs=50
 
 
 Add PyTorch Lightning Trainer arguments from CLI:
-    python speech_to_text.py \
+    python wav2vec.py \
         ... \
         +trainer.fast_dev_run=true
 
@@ -50,32 +57,32 @@ Hydra logs will be found in "$(./outputs/$(date +"%y-%m-%d")/$(date +"%H-%M-%S")
 PTL logs will be found in "$(./outputs/$(date +"%y-%m-%d")/$(date +"%H-%M-%S")/lightning_logs)"
 
 Override some args of optimizer:
-    python speech_to_text.py \
-    model.train_ds.manifest_filepath="./an4/train_manifest.json" \
-    model.validation_ds.manifest_filepath="./an4/test_manifest.json" \
-    hydra.run.dir="." \
-    trainer.gpus=2 \
-    trainer.max_epochs=2 \
-    model.optim.args.params.betas=[0.8,0.5] \
-    model.optim.args.params.weight_decay=0.0001
+    python examples/asr/wav2vec.py \
+        model.train_ds.manifest_path="./examples/asr/train.tsv" \
+        model.validation_ds.manifest_path="./examples/asr/valid.tsv" \
+        model.test_ds.manifest_path="./examples/asr/valid.tsv" \
+        hydra.run.dir="." \
+        trainer.gpus=2 \
+        trainer.max_epochs=2 \
+        model.optim.args.params.betas=[0.8,0.5] \
+        model.optim.args.params.weight_decay=0.0001
 
-Overide optimizer entirely
-    python speech_to_text.py \
-    model.train_ds.manifest_filepath="./an4/train_manifest.json" \
-    model.validation_ds.manifest_filepath="./an4/test_manifest.json" \
-    hydra.run.dir="." \
-    trainer.gpus=2 \
-    trainer.max_epochs=2 \
-    model.optim.name=adamw \
-    model.optim.lr=0.001 \
-    ~model.optim.args \
-    +model.optim.args.betas=[0.8,0.5]\
-    +model.optim.args.weight_decay=0.0005
+Override optimizer entirely
+    python examples/asr/wav2vec.py \
+        model.train_ds.manifest_path="./examples/asr/train.tsv" \
+        model.validation_ds.manifest_path="./examples/asr/valid.tsv" \
+        model.test_ds.manifest_path="./examples/asr/valid.tsv" \
+        hydra.run.dir="." \
+        trainer.gpus=2 \
+        trainer.max_epochs=2 \
+        ~model.optim.args \
+        +model.optim.args.betas=[0.8,0.5]\
+        +model.optim.args.weight_decay=0.0005
 
 """
 
 
-@hydra_runner(config_path="conf", config_name="wav2vec")
+@hydra_runner(config_path="configs", config_name="wav2vec")
 def main(cfg: DictConfig):
     logging.info("Application config\n" + cfg.pretty())
 

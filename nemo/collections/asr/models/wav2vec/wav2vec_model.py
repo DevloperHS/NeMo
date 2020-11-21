@@ -1,3 +1,21 @@
+# Copyright (c) 2020, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# Copyright (c) Facebook, Inc. and its affiliates.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
+
 import math
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Union
@@ -5,14 +23,11 @@ from typing import List, Optional, Tuple, Union
 import torch
 import torch.nn.functional as F
 from nemo.collections.asr.losses.wav2vecloss import Wav2VecCriterion
-from nemo.collections.asr.models.wav2vec.modules.config import (
-    Wav2VecTransformerConfig,
-    Wav2VecEncoderModelConfig,
-)
-from nemo.collections.asr.models.wav2vec.modules.gumbel_vector_quantizer import GumbelVectorQuantizer
-from nemo.collections.asr.models.wav2vec.modules.utils import compute_mask_indices, init_bert_params, TransposeLast, \
-    SamePad
 from nemo.collections.asr.models.wav2vec.wav2vec_base import Wav2VecBase
+from nemo.collections.asr.models.wav2vec.wav2vec_config import Wav2VecEncoderModelConfig, Wav2VecTransformerConfig, \
+    Wav2VecConvExtractorMode
+from nemo.collections.asr.modules.wav2vec_modules import GumbelVectorQuantizer, compute_mask_indices, TransposeLast, \
+    SamePad, init_bert_params
 from nemo.core.classes.common import PretrainedModelInfo
 from omegaconf import DictConfig, OmegaConf
 from pytorch_lightning import Trainer
@@ -378,15 +393,18 @@ class Wav2VecEncoderModel(Wav2VecBase):
 
 
 class ConvFeatureExtractionModel(nn.Module):
+    """
+        Converts input raw audio into features for downstream transformer model.
+        Uses 1D convolutional blocks with GeLU activation.
+    """
+
     def __init__(
             self,
             conv_layers: List[Tuple[int, int, int]],
-            mode: str = "default",
+            mode: Wav2VecConvExtractorMode = Wav2VecConvExtractorMode.default,
             conv_bias: bool = False,
     ):
         super().__init__()
-
-        assert mode in {"default", "layer_norm"}
 
         def block(
                 n_in, n_out, k, stride, is_layer_norm=False, is_group_norm=False, conv_bias=False,
@@ -423,8 +441,8 @@ class ConvFeatureExtractionModel(nn.Module):
                     dim,
                     k,
                     stride,
-                    is_layer_norm=mode == "layer_norm",
-                    is_group_norm=mode == "default" and i == 0,
+                    is_layer_norm=mode is Wav2VecConvExtractorMode.layer_norm,
+                    is_group_norm=mode is Wav2VecConvExtractorMode.default and i == 0,
                     conv_bias=conv_bias,
                 )
             )
@@ -448,6 +466,7 @@ class Wav2VecTransformerEncoder(nn.Module):
         self.embedding_dim = cfg.encoder.embedding_dim
         self.layer_norm_first = cfg.encoder.layer_norm_first
 
+        # positional convolutional embeddings
         self.pos_conv = nn.Conv1d(
             self.embedding_dim,
             self.embedding_dim,
