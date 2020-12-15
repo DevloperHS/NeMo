@@ -14,6 +14,7 @@
 
 import pytorch_lightning as pl
 from omegaconf import DictConfig
+from pytorch_lightning.callbacks import ModelCheckpoint
 
 from nemo.collections.asr.models.wav2vec.wav2vec_model import Wav2VecEncoderModel
 from nemo.core.config import hydra_runner
@@ -78,7 +79,7 @@ Override optimizer entirely
 def main(cfg: DictConfig):
     logging.info("Application config\n" + cfg.pretty())
 
-    trainer = pl.Trainer(**cfg.trainer)
+    trainer = pl.Trainer(**cfg.trainer, callbacks=[ModelCheckpoint(monitor='val_loss', save_top_k=3, save_last=True)])
     exp_manager(trainer, cfg.get("exp_manager", None))
 
     wav2vec_encoder_model = Wav2VecEncoderModel(cfg=cfg.model, trainer=trainer)
