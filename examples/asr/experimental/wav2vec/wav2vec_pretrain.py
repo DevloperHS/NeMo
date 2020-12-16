@@ -83,7 +83,9 @@ def main(cfg: DictConfig):
         **cfg.trainer,
         callbacks=[
             ModelCheckpoint(
-                verbose=True
+                verbose=True,
+                save_last=True,
+                save_top_k=0,
             )
         ]
     )
