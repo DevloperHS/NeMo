@@ -86,6 +86,7 @@ def main(cfg: DictConfig):
             ModelCheckpoint(
                 verbose=True,
                 save_top_k=3,
+                monitor='val_loss'
             )
         ]
     )
