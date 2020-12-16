@@ -81,11 +81,11 @@ def main(cfg: DictConfig):
 
     trainer = pl.Trainer(
         **cfg.trainer,
+        checkpoint_callback=True,
         callbacks=[
             ModelCheckpoint(
                 verbose=True,
-                save_last=True,
-                save_top_k=0,
+                save_top_k=3,
             )
         ]
     )
