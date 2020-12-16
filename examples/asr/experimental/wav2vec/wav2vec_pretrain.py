@@ -79,7 +79,14 @@ Override optimizer entirely
 def main(cfg: DictConfig):
     logging.info("Application config\n" + cfg.pretty())
 
-    trainer = pl.Trainer(**cfg.trainer, callbacks=[ModelCheckpoint(monitor='val_loss', save_top_k=3, save_last=True)])
+    trainer = pl.Trainer(
+        **cfg.trainer,
+        callbacks=[
+            ModelCheckpoint(
+                verbose=True
+            )
+        ]
+    )
     exp_manager(trainer, cfg.get("exp_manager", None))
 
     wav2vec_encoder_model = Wav2VecEncoderModel(cfg=cfg.model, trainer=trainer)

@@ -152,7 +152,7 @@ class Wav2VecEncoderModel(Wav2VecBase):
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
         loss, feature_loss, prob_ppl_loss = self._step(batch)
-        self.log('val_loss', loss, prog_bar=True, on_epoch=True, sync_dist=True)
+        self.log('validation_loss', loss, prog_bar=True, on_epoch=True, sync_dist=True)
 
     def test_step(self, batch, batch_idx, dataloader_idx=0):
         loss, feature_loss, prob_ppl_loss = self._step(batch)
