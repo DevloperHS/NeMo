@@ -1,3 +1,6 @@
+#requires sox with mp3 support
+#For example sudo apt-get install libsox-fmt-mp3
+
 import argparse
 import csv
 import json
